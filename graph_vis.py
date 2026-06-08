@@ -18,6 +18,9 @@ import re
 from pathlib import Path
 
 import networkx as nx
+from pathlib import Path
+
+Path("docs").mkdir(exist_ok=True)
 
 ############################################################################
 # Chargement
