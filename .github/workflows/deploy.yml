@@ -27,7 +27,7 @@ jobs:
 
       - name: Generate graph
         run: |
-          python graph_vis.py citing_articles.json
+          python graph_vis.py
 
       - name: Commit generated HTML
         run: |
