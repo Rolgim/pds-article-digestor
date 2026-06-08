@@ -1,4 +1,6 @@
 """
+stac_doi_scraper.py
+
 Récupère les DOI des collections STAC via deux sources :
   1. ODE (ode.rsl.wustl.edu) — productDetail.aspx + UpdatePanel postback
   2. Fallback : https://pds-geosciences.wustl.edu/dataserv/doi.htm
@@ -33,7 +35,9 @@ from stac_rag_ingest import (
 
 DOI_FILE = Path("doi_by_collection.json")
 PDS_DOI_PAGE = "https://pds-geosciences.wustl.edu/dataserv/doi.htm"
-
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+}
 MAX_CONCURRENT = 5
 
 _IDGEO_RE = re.compile(r"[?&]product_idGeo=(\d+)", re.IGNORECASE)
@@ -142,26 +146,38 @@ def _normalize_dataset_id(dataset_id: str) -> str:
     return re.split(r"[\s(]", dataset_id.strip())[0].upper()
 
 
+def _strip_version(s: str) -> str:
+    """MRO-M-HIRISE-3-RDR-V1.0 -> MRO-M-HIRISE-3-RDR"""
+    return re.sub(r"-V\d+[.\d]*$", "", s, flags=re.IGNORECASE)
+
+
 def _match_pds_doi(dataset_id: str, pds_dois: dict[str, str]) -> str | None:
     """
     Match entre pds:dataset_id de la collection et les clés du dict PDS.
-    1. Exact (après normalisation)
-    2. Préfixe : la clé PDS est un préfixe du dataset_id (troncature page)
-    3. Préfixe inverse : dataset_id est préfixe de la clé PDS
+    1. Exact
+    2. Exact sans version (V1.0 vs V1.1)
+    3. Préfixe sans version dans les deux sens
     """
     if not dataset_id:
         return None
 
-    norm = _normalize_dataset_id(dataset_id)
+    norm    = _normalize_dataset_id(dataset_id)
+    norm_nv = _strip_version(norm)
 
     # 1. Exact
     if norm in pds_dois:
         return pds_dois[norm]
 
-    # 2 & 3. Préfixe dans les deux sens
     for key, doi in pds_dois.items():
         key_up = key.upper()
-        if norm.startswith(key_up) or key_up.startswith(norm):
+        key_nv = _strip_version(key_up)
+
+        # 2. Exact sans version
+        if norm_nv == key_nv:
+            return doi
+
+        # 3. Préfixe sans version dans les deux sens
+        if norm_nv and key_nv and (norm_nv.startswith(key_nv) or key_nv.startswith(norm_nv)):
             return doi
 
     return None
@@ -326,8 +342,8 @@ async def _get_doi_from_ode(
     )
     params = {"product_idgeo": product_idgeo, "option": "hideResize"}
 
-    async with httpx.AsyncClient(timeout=30, follow_redirects=True) as ode:
-        # GET : récupère le viewstate lié à cette session
+    async with httpx.AsyncClient(timeout=30, follow_redirects=True, headers=HEADERS) as ode:
+        # GET : récupère viewstate + cookies de session
         try:
             r1 = await ode.get(detail_url, params=params)
         except Exception:
@@ -343,15 +359,20 @@ async def _get_doi_from_ode(
             return None
 
         # POST : UpdatePanel ASP.NET
-        payload = {
-            **hidden,
-            "ScriptManager1": "UpdatePanel2|lblProdDescAndDataSetDocuments",
-            "__EVENTTARGET": "lblProdDescAndDataSetDocuments",
+        # On part des champs hidden du formulaire et on ajoute uniquement
+        # les champs spécifiques au postback (sans dupliquer txtScroll*)
+        payload = dict(hidden)  # copie : __VIEWSTATE, __VIEWSTATEGENERATOR, etc.
+        payload.update({
+            "ScriptManager1":  "UpdatePanel2|lblProdDescAndDataSetDocuments",
+            "__EVENTTARGET":   "lblProdDescAndDataSetDocuments",
             "__EVENTARGUMENT": "",
-            "__ASYNCPOST": "true",
-            "txtScrollLeft": "0",
-            "txtScrollTop": "0",
-        }
+            "__ASYNCPOST":     "true",
+        })
+        # txtScrollLeft / txtScrollTop déjà dans hidden depuis le GET,
+        # on s'assure juste qu'ils ont une valeur numérique
+        payload["txtScrollLeft"] = "0"
+        payload["txtScrollTop"]  = "0"
+
         try:
             r2 = await ode.post(
                 detail_url,
@@ -359,12 +380,32 @@ async def _get_doi_from_ode(
                 data=payload,
                 headers={
                     "X-Requested-With": "XMLHttpRequest",
-                    "X-MicrosoftAjax": "Delta=true",
-                    "Content-Type": "application/x-www-form-urlencoded; charset=utf-8",
+                    "X-MicrosoftAjax":  "Delta=true",
+                    "Content-Type":     "application/x-www-form-urlencoded; charset=utf-8",
+                    "Referer": str(r1.url),
                 },
             )
         except Exception:
             return None
+
+        # Réponse UpdatePanel — cherche le DOI directement dans le flux texte
+        if "pageRedirect" in r2.text:
+            # ASP.NET a rejeté le postback — essai sans __VIEWSTATEENCRYPTED
+            payload2 = {k: v for k, v in payload.items() if k != "__VIEWSTATEENCRYPTED"}
+            try:
+                r2 = await ode.post(
+                    detail_url,
+                    params=params,
+                    data=payload2,
+                    headers={
+                        "X-Requested-With": "XMLHttpRequest",
+                        "X-MicrosoftAjax":  "Delta=true",
+                        "Content-Type":     "application/x-www-form-urlencoded; charset=utf-8",
+                        "Referer": str(r1.url),
+                    },
+                )
+            except Exception:
+                return None
 
     matches = _DOI_RE.findall(r2.text)
     if matches:
@@ -397,18 +438,23 @@ async def _get_doi_from_datacite(
     if not base:
         return None
 
+    # Préfixes DOI connus pour les archives planétaires
+    # On exclut Zenodo, Figshare et autres dépôts génériques
+    PDS_PREFIXES = ("10.17189/", "10.57780/", "10.26033/")
+
     try:
         async with httpx.AsyncClient(timeout=15, follow_redirects=True) as dc:
             r = await dc.get(
                 "https://api.datacite.org/dois",
-                params={"query": base, "page[size]": 1},
+                params={"query": base, "page[size]": 10},
             )
         results = r.json().get("data", [])
-        if results:
-            doi = results[0]["id"]
-            if verbose:
-                print(f"{collection_id}: DataCite -> {doi}")
-            return doi
+        for record in results:
+            doi = record["id"]
+            if any(doi.startswith(p) for p in PDS_PREFIXES):
+                if verbose:
+                    print(f"{collection_id}: DataCite -> {doi}")
+                return doi
     except Exception:
         pass
 
@@ -436,11 +482,11 @@ async def _scrape_doi_for_collection(
         doi = None
         dataset_id = meta.get("dataset_id", "")
 
-        # Source 1 : ODE
+        # --- Source 1 : ODE ---
         if landing:
             doi = await _get_doi_from_ode(collection_id, landing, verbose)
 
-        # Sources 2 & 3 : PDS page puis DataCite
+        # --- Sources 2 & 3 : PDS page puis DataCite ---
         if not doi and dataset_id:
             # Source 2 : page PDS Geosciences
             if pds_dois:
@@ -480,7 +526,7 @@ async def scrape_dois(force_refresh=False, verbose=False):
             return False
         if isinstance(entry, str):
             return bool(entry)
-        return bool(entry.get("doi"))
+        return isinstance(entry, dict) and bool(entry.get("doi"))
 
     already_done = {cid for cid, entry in doi_map.items() if _has_doi(entry)}
     todo = [c for c in collections if c.id not in already_done]
