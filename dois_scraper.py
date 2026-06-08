@@ -1,6 +1,4 @@
 """
-stac_doi_scraper.py
-
 Récupère les DOI des collections STAC via deux sources :
   1. ODE (ode.rsl.wustl.edu) — productDetail.aspx + UpdatePanel postback
   2. Fallback : https://pds-geosciences.wustl.edu/dataserv/doi.htm
@@ -169,17 +167,61 @@ def _match_pds_doi(dataset_id: str, pds_dois: dict[str, str]) -> str | None:
     return None
 
 
-async def _get_pds_dataset_id(
+# Mapping niveau de processing PDS3/PDS4 -> label normalisé
+_PROC_LEVEL = {
+    "edr": "raw", "mdr": "raw", "ldr": "raw",
+    "rdr": "calibrated", "cdr": "calibrated", "idr": "calibrated",
+    "ddr": "derived", "mdr2": "derived",
+    "map": "map_projected", "dim": "map_projected",
+    "geo": "derived", "gdr": "derived",
+    "5":   "derived", "4": "map_projected", "3": "derived",
+    "2":   "calibrated", "1": "raw",
+}
+
+def _infer_processing_level(collection_id: str, dataset_id: str, product_name: str) -> str:
+    """Infère le niveau de processing depuis l'id de collection, le dataset_id ou le product_name."""
+    for src in (collection_id, dataset_id or "", product_name or ""):
+        for token, level in _PROC_LEVEL.items():
+            # cherche le token comme segment délimité (tiret, underscore, espace)
+            if re.search(rf"(?:^|[-_\s]){re.escape(token)}(?:[-_\s]|$)", src, re.IGNORECASE):
+                return level
+    return "unknown"
+
+
+async def _get_collection_meta(
     client: httpx.AsyncClient,
     collection_id: str,
-) -> str | None:
-    """Fetch pds:dataset_id depuis les métadonnées de la collection STAC."""
+) -> dict:
+    """
+    Fetch les métadonnées enrichies de la collection STAC en un seul appel.
+    Retourne un dict avec doi-relevant fields + description + niveau de processing.
+    """
     try:
         r = await client.get(f"{STAC_BASE}/collections/{collection_id}")
         r.raise_for_status()
-        return r.json().get("pds:dataset_id")
+        data = r.json()
     except Exception:
-        return None
+        return {}
+
+    dataset_id   = data.get("pds:dataset_id") or ""
+    product_name = data.get("pds:product_name") or ""
+
+    # Cibles : ssys:targets peut être une liste ou une string
+    targets = data.get("ssys:targets") or data.get("target") or []
+    if isinstance(targets, str):
+        targets = [targets]
+
+    return {
+        "dataset_id":        dataset_id,
+        "description":       data.get("description") or "",
+        "title":             data.get("title") or "",
+        "product_name":      product_name,
+        "processing_level":  _infer_processing_level(collection_id, dataset_id, product_name),
+        "targets":           targets,
+        "target_class":      data.get("ssys:target_class") or "",
+        "n_products":        data.get("pds:number_of_products"),
+        "ode_pt":            (data.get("_ode") or {}).get("pt") or "",
+    }
 
 ##############################################################################
 # LANDING URL
@@ -379,31 +421,50 @@ async def _scrape_doi_for_collection(
     pds_dois: dict[str, str],
     sem: asyncio.Semaphore,
     verbose: bool = False,
-) -> tuple[str, str | None]:
-
+) -> tuple[str, dict]:
+    """
+    Retourne (collection_id, entry) où entry contient le DOI + les métadonnées
+    de la collection (description, processing_level, targets...).
+    """
     async with sem:
-        # --- Source 1 : ODE ---
-        landing = await _get_landing_url(client, collection_id, verbose)
-        doi = None
+        # Fetch métadonnées + landing URL en parallèle
+        meta, landing = await asyncio.gather(
+            _get_collection_meta(client, collection_id),
+            _get_landing_url(client, collection_id, verbose),
+        )
 
+        doi = None
+        dataset_id = meta.get("dataset_id", "")
+
+        # Source 1 : ODE
         if landing:
             doi = await _get_doi_from_ode(collection_id, landing, verbose)
 
-        # --- Sources 2 & 3 : PDS page puis DataCite ---
-        if not doi:
-            dataset_id = await _get_pds_dataset_id(client, collection_id)
-            if dataset_id:
-                # Source 2 : page PDS Geosciences
-                if pds_dois:
-                    doi = _match_pds_doi(dataset_id, pds_dois)
-                    if doi and verbose:
-                        print(f"{collection_id}: PDS page -> {doi}")
+        # Sources 2 & 3 : PDS page puis DataCite
+        if not doi and dataset_id:
+            # Source 2 : page PDS Geosciences
+            if pds_dois:
+                doi = _match_pds_doi(dataset_id, pds_dois)
+                if doi and verbose:
+                    print(f"{collection_id}: PDS page -> {doi}")
 
-                # Source 3 : DataCite
-                if not doi:
-                    doi = await _get_doi_from_datacite(dataset_id, verbose, collection_id)
+            # Source 3 : DataCite
+            if not doi:
+                doi = await _get_doi_from_datacite(dataset_id, verbose, collection_id)
 
-        return collection_id, doi
+        entry = {
+            "doi":              doi,
+            "description":      meta.get("description", ""),
+            "title":            meta.get("title", ""),
+            "product_name":     meta.get("product_name", ""),
+            "processing_level": meta.get("processing_level", "unknown"),
+            "targets":          meta.get("targets", []),
+            "target_class":     meta.get("target_class", ""),
+            "n_products":       meta.get("n_products"),
+            "ode_pt":           meta.get("ode_pt", ""),
+        }
+
+        return collection_id, entry
 
 ##############################################################################
 # MAIN
@@ -414,7 +475,14 @@ async def scrape_dois(force_refresh=False, verbose=False):
     pds_dois    = await _fetch_pds_doi_page()
     doi_map     = load_doi_cache()
 
-    already_done = {cid for cid, doi in doi_map.items() if doi is not None}
+    def _has_doi(entry) -> bool:
+        if entry is None:
+            return False
+        if isinstance(entry, str):
+            return bool(entry)
+        return bool(entry.get("doi"))
+
+    already_done = {cid for cid, entry in doi_map.items() if _has_doi(entry)}
     todo = [c for c in collections if c.id not in already_done]
     print(f"\n{len(todo)} collections à traiter ({len(already_done)} déjà en cache)")
 
@@ -430,10 +498,12 @@ async def scrape_dois(force_refresh=False, verbose=False):
 
         completed = 0
         for coro in asyncio.as_completed(tasks):
-            cid, doi = await coro
-            doi_map[cid] = doi
+            cid, entry = await coro
+            doi_map[cid] = entry
             completed += 1
-            status = doi if doi else "NON TROUVÉ"
+            doi = entry.get("doi")
+            level = entry.get("processing_level", "")
+            status = f"{doi} [{level}]" if doi else "NON TROUVÉ"
             print(f"[{completed}/{len(todo)}] {cid} -> {status}")
 
             if completed % 20 == 0:
@@ -441,7 +511,7 @@ async def scrape_dois(force_refresh=False, verbose=False):
                 print("Sauvegarde intermédiaire")
 
     save_doi_cache(doi_map)
-    found = sum(1 for x in doi_map.values() if x)
+    found = sum(1 for e in doi_map.values() if _has_doi(e))
     print(f"\nDOI trouvés : {found}/{len(doi_map)}")
 
 
