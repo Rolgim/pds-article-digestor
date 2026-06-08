@@ -1,0 +1,42 @@
+name: Build Graph
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          pip install networkx pyvis
+
+      - name: Generate graph
+        run: |
+          python graph.py graph.json
+
+      - name: Commit generated HTML
+        run: |
+          git config user.name github-actions
+          git config user.email github-actions@github.com
+
+          git add docs/index.html
+
+          git diff --cached --quiet || (
+            git commit -m "Update graph"
+            git push
+          )
