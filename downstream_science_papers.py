@@ -1,6 +1,4 @@
 """
-ads_citations.py
-----------------
 Récupère les articles citant chaque dataset STAC depuis 3 sources :
   1. NASA ADS   — référence en planétologie/astronomie
   2. OpenAlex   — couverture large toutes disciplines, open
@@ -37,9 +35,9 @@ from pathlib import Path
 
 import httpx
 
-# ---------------------------------------------------------------------------
+############################################################################
 # Config
-# ---------------------------------------------------------------------------
+############################################################################
 
 DOI_FILE    = Path("doi_by_collection.json")
 OUTPUT_FILE = Path("citing_articles.json")
@@ -57,9 +55,9 @@ ADS_PAGE    = 200   # max par page ADS
 OA_PAGE     = 200   # max par page OpenAlex
 CR_PAGE     = 1000
 
-# ---------------------------------------------------------------------------
+############################################################################
 # Normalisation DOI
-# ---------------------------------------------------------------------------
+############################################################################
 
 def _norm_doi(doi) -> str | None:
     if not doi:
@@ -72,9 +70,9 @@ def _norm_doi(doi) -> str | None:
     doi = re.sub(r'^https?://(dx\.)?doi\.org/', '', doi)
     return doi.rstrip('/') or None
 
-# ---------------------------------------------------------------------------
+############################################################################
 # Clients
-# ---------------------------------------------------------------------------
+############################################################################
 
 def _make_clients(token: str):
     ads = httpx.AsyncClient(
@@ -91,9 +89,10 @@ def _make_clients(token: str):
     )
     return ads, oa, cr
 
-# ---------------------------------------------------------------------------
+
+############################################################################
 # ADS — pagination complète
-# ---------------------------------------------------------------------------
+############################################################################
 
 async def _fetch_ads(
     client: httpx.AsyncClient,
@@ -149,9 +148,10 @@ async def _fetch_ads(
         })
     return result
 
-# ---------------------------------------------------------------------------
+
+############################################################################
 # OpenAlex — résolution DOI → ID puis cites:ID, cursor pagination
-# ---------------------------------------------------------------------------
+############################################################################
 
 async def _fetch_openalex(
     client: httpx.AsyncClient,
@@ -235,9 +235,9 @@ async def _fetch_openalex(
         })
     return out
 
-# ---------------------------------------------------------------------------
+############################################################################
 # Crossref Event Data
-# ---------------------------------------------------------------------------
+############################################################################
 
 async def _fetch_crossref_events(
     client: httpx.AsyncClient,
@@ -291,16 +291,16 @@ async def _fetch_crossref_events(
         out.append({
             "title":   subj.get("title", ""),
             "authors": [],
-            "year":    int(ev.get("occurred_at", "0000")[:4]) or None,
+            "year":    (lambda s: int(s) if s.isdigit() else None)(ev.get("occurred_at", "")[:4]),
             "doi":     doi_val,
             "abstract": "",
             "_source": "crossref_events",
         })
     return out
 
-# ---------------------------------------------------------------------------
+############################################################################
 # Fusion + déduplication
-# ---------------------------------------------------------------------------
+############################################################################
 
 def _merge_articles(sources: list[list[dict]]) -> list[dict]:
     """
@@ -338,12 +338,12 @@ def _merge_articles(sources: list[list[dict]]) -> list[dict]:
         art["sources"] = sorted(art["sources"])
         result.append(art)
 
-    result.sort(key=lambda x: x.get("year") or 0, reverse=True)
+    result.sort(key=lambda x: int(x.get("year") or 0), reverse=True)
     return result
 
-# ---------------------------------------------------------------------------
+############################################################################
 # Pipeline par collection
-# ---------------------------------------------------------------------------
+############################################################################
 
 async def _process_collection(
     ads_client: httpx.AsyncClient,
@@ -376,9 +376,9 @@ async def _process_collection(
             "citing_articles": merged,
         }
 
-# ---------------------------------------------------------------------------
+############################################################################
 # Cache
-# ---------------------------------------------------------------------------
+############################################################################
 
 def load_output() -> dict:
     if OUTPUT_FILE.exists():
@@ -391,9 +391,9 @@ def save_output(data: dict):
         encoding="utf-8",
     )
 
-# ---------------------------------------------------------------------------
+############################################################################
 # Main
-# ---------------------------------------------------------------------------
+############################################################################
 
 async def run(force_refresh: bool, verbose: bool):
     token = os.environ.get("ADS_TOKEN")
@@ -450,7 +450,7 @@ async def run(force_refresh: bool, verbose: bool):
 
     total   = sum(r["citing_count"] for r in results.values())
     nonzero = sum(1 for r in results.values() if r["citing_count"] > 0)
-    print(f"\n=== Résumé ===")
+    print(f"\n Résumé final :")
     print(f"  Collections avec ≥1 article : {nonzero}/{len(results)}")
     print(f"  Total articles (dédupliqués) : {total}")
     print(f"  Résultat -> {OUTPUT_FILE}")
