@@ -369,7 +369,7 @@ def main():
     parser = argparse.ArgumentParser(description="Visualise le graphe dataset → articles citants")
     parser.add_argument("--doi", default="doi_by_collection.json")
     parser.add_argument("--cit", default="citing_articles.json")
-    parser.add_argument("-o", "--output", default="graph.html")
+    parser.add_argument("-o", "--output", default="docs/index.html")
     parser.add_argument("--min-citations", type=int, default=0,
                         help="Filtre les datasets avec moins de N citations")
     parser.add_argument("--targets", default=None,
