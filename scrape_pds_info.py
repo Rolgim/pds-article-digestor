@@ -56,26 +56,22 @@ def scrape_all_pds_metadata(doi_suffix):
         return {"error": str(e)}
 
 def worker(item_tuple):
-    """
-    Fonction exécutée par chaque thread.
-    Supprime l'ancien contenu et ne garde QUE le résultat du scraping.
-    """
     key, item = item_tuple
     print(f"[+] Scraping en cours : {key}")
-    
-    doi = item.get("doi")
-    
-    # On vide l'ancien dictionnaire pour repartir à zéro
-    cleaned_item = {}
-    
-    if doi:
-        # On exécute le scraping de la table complète
-        cleaned_item = scrape_all_pds_metadata(doi)
-    else:
-        cleaned_item = {"info": "Aucun DOI fourni dans le JSON d'origine"}
-        
-    return key, cleaned_item
 
+    # item est maintenant un DOI string (ou None)
+    doi = item if isinstance(item, str) else None
+
+    if not doi:
+        return key, {"doi": None, "info": "Aucun DOI"}
+
+    scraped = scrape_all_pds_metadata(doi)
+
+    # Le DOI est toujours conservé, même si le scraping a échoué
+    result = {"doi": doi}
+    result.update(scraped)
+    return key, result
+    
 def main():
     # 1. Chargement du fichier JSON d'entrée
     try:

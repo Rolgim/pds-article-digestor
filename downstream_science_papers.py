@@ -41,7 +41,7 @@ import httpx
 # Config
 # ---------------------------------------------------------------------------
 
-DOI_FILE    = Path("doi_by_collection.json")
+DOI_FILE    = Path("datasets_enriched.json")
 OUTPUT_FILE = Path("citing_articles.json")
 
 ADS_BASE      = "https://api.adsabs.harvard.edu/v1/search/query"
@@ -328,7 +328,7 @@ def _merge_articles(sources: list[list[dict]]) -> list[dict]:
             title = (art.get("title") or "").lower().strip()
             year  = art.get("year")
 
-            key = doi if doi else f"{title}|{year}"
+            key = doi if doi else (f"{title}|{year}" if title else None)
             if not key:
                 continue
 
@@ -360,7 +360,7 @@ async def _process_collection(
     oa_client:  httpx.AsyncClient,
     cr_client:  httpx.AsyncClient,
     collection_id: str,
-    doi: str,
+    entry: dict,
     sem: asyncio.Semaphore,
     ads_lock: asyncio.Lock,
     oa_lock:  asyncio.Lock,
@@ -368,6 +368,8 @@ async def _process_collection(
     verbose: bool,
 ) -> tuple[str, dict]:
 
+    doi = entry["doi"]
+    metadata = entry["metadata"]
     async with sem:
         if verbose:
             print(f"\n→ {collection_id} ({doi})")
@@ -380,13 +382,13 @@ async def _process_collection(
 
         merged = _merge_articles([ads_arts, oa_arts, cr_arts])
 
-        return collection_id, {
-            "doi": doi,
-            "citing_count": len(merged),
-            "citing_articles": merged,
-            "_status": "done"
-        }
+        result = metadata.copy()
 
+        result["citing_count"] = len(merged)
+        result["citing_articles"] = merged
+        result["_status"] = "done"
+
+        return collection_id, result
 # ---------------------------------------------------------------------------
 # Cache
 # ---------------------------------------------------------------------------
@@ -415,12 +417,17 @@ async def run(force_refresh: bool, verbose: bool):
         )
 
     raw_map = json.loads(DOI_FILE.read_text(encoding="utf-8"))
+    
     # Supporte l'ancien format {"cid": "doi"} et le nouveau {"cid": {"doi": "...", ...}}
     collections_with_doi = {}
     for k, v in raw_map.items():
         doi = v.get("doi") if isinstance(v, dict) else v
+
         if doi:
-            collections_with_doi[k] = doi
+            collections_with_doi[k] = {
+                "doi": doi,
+                "metadata": v
+        }
     print(f"{len(collections_with_doi)} collections avec DOI")
 
     results      = {} if force_refresh else load_output()
@@ -442,7 +449,7 @@ async def run(force_refresh: bool, verbose: bool):
     for cid in todo.keys():
         if cid not in results:
             results[cid] = {
-                "doi": collections_with_doi[cid],
+                **collections_with_doi[cid]["metadata"],
                 "citing_count": 0,
                 "citing_articles": [],
                 "_status": "pending"
@@ -451,14 +458,19 @@ async def run(force_refresh: bool, verbose: bool):
     async with ads_client, oa_client, cr_client:
         tasks = [
             _process_collection(
-                ads_client, oa_client, cr_client,
-                cid, doi, sem,
-                ads_lock, oa_lock, cr_lock,
+                ads_client,
+                oa_client,
+                cr_client,
+                cid,
+                entry,
+                sem,
+                ads_lock,
+                oa_lock,
+                cr_lock,
                 verbose,
             )
-            for cid, doi in todo.items()
+            for cid, entry in todo.items()
         ]
-
         completed = 0
         for coro in asyncio.as_completed(tasks):
             cid, result = await coro

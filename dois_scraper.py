@@ -460,20 +460,14 @@ async def _get_doi_from_datacite(
 
     return None
 
-
 async def _scrape_doi_for_collection(
     client: httpx.AsyncClient,
     collection_id: str,
     pds_dois: dict[str, str],
     sem: asyncio.Semaphore,
     verbose: bool = False,
-) -> tuple[str, dict]:
-    """
-    Retourne (collection_id, entry) où entry contient le DOI + les métadonnées
-    de la collection (description, processing_level, targets...).
-    """
+) -> tuple[str, str | None]:
     async with sem:
-        # Fetch métadonnées + landing URL en parallèle
         meta, landing = await asyncio.gather(
             _get_collection_meta(client, collection_id),
             _get_landing_url(client, collection_id, verbose),
@@ -482,35 +476,18 @@ async def _scrape_doi_for_collection(
         doi = None
         dataset_id = meta.get("dataset_id", "")
 
-        # --- Source 1 : ODE ---
         if landing:
             doi = await _get_doi_from_ode(collection_id, landing, verbose)
 
-        # --- Sources 2 & 3 : PDS page puis DataCite ---
         if not doi and dataset_id:
-            # Source 2 : page PDS Geosciences
             if pds_dois:
                 doi = _match_pds_doi(dataset_id, pds_dois)
                 if doi and verbose:
                     print(f"{collection_id}: PDS page -> {doi}")
-
-            # Source 3 : DataCite
             if not doi:
                 doi = await _get_doi_from_datacite(dataset_id, verbose, collection_id)
 
-        entry = {
-            "doi":              doi,
-            "description":      meta.get("description", ""),
-            "title":            meta.get("title", ""),
-            "product_name":     meta.get("product_name", ""),
-            "processing_level": meta.get("processing_level", "unknown"),
-            "targets":          meta.get("targets", []),
-            "target_class":     meta.get("target_class", ""),
-            "n_products":       meta.get("n_products"),
-            "ode_pt":           meta.get("ode_pt", ""),
-        }
-
-        return collection_id, entry
+        return collection_id, doi 
 
 ##############################################################################
 # MAIN
@@ -528,7 +505,7 @@ async def scrape_dois(force_refresh=False, verbose=False):
             return bool(entry)
         return isinstance(entry, dict) and bool(entry.get("doi"))
 
-    already_done = {cid for cid, entry in doi_map.items() if _has_doi(entry)}
+    already_done = {cid for cid, doi in doi_map.items() if doi}
     todo = [c for c in collections if c.id not in already_done]
     print(f"\n{len(todo)} collections à traiter ({len(already_done)} déjà en cache)")
 
@@ -544,12 +521,10 @@ async def scrape_dois(force_refresh=False, verbose=False):
 
         completed = 0
         for coro in asyncio.as_completed(tasks):
-            cid, entry = await coro
-            doi_map[cid] = entry
+            cid, doi = await coro
+            doi_map[cid] = doi         
             completed += 1
-            doi = entry.get("doi")
-            level = entry.get("processing_level", "")
-            status = f"{doi} [{level}]" if doi else "NON TROUVÉ"
+            status = doi if doi else "NON TROUVÉ"
             print(f"[{completed}/{len(todo)}] {cid} -> {status}")
 
             if completed % 20 == 0:
