@@ -1,7 +1,9 @@
-stac_doi_scraper  →  doi_by_collection.json  {"cid": "10.XXX/YYY"}
+```
+dois_scraper.py                 →  doi_by_collection.json  {"cid": "10.XXX/YYY"}
        ↓
-scrape_pds_info   →  datasets_enriched.json  {"cid": {"doi": "...", ...métadonnées PDS...}}
+scrape_pds_info.py              →  datasets_enriched.json  {"cid": {"doi": "...", ...métadonnées PDS...}}
        ↓
-ads_citations     →  citing_articles.json    {"cid": {"doi": "...", ...métadonnées..., citing_articles: [...]}}
+downstream_science_paper.py     →  citing_articles.json    {"cid": {"doi": "...", ...métadonnées..., citing_articles: [...]}}
        ↓
-graph_viz         →  docs/index.html
+graph_vis.py                    →  docs/index.html
+```
