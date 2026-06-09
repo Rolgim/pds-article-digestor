@@ -34,7 +34,7 @@ import json
 import os
 import re
 from pathlib import Path
-
+import urllib.parse
 import httpx
 
 # ---------------------------------------------------------------------------
@@ -60,17 +60,27 @@ CR_PAGE     = 1000
 # ---------------------------------------------------------------------------
 # Normalisation DOI
 # ---------------------------------------------------------------------------
-
 def _norm_doi(doi) -> str | None:
     if not doi:
         return None
+
     if isinstance(doi, list):
         doi = doi[0] if doi else None
     if not doi:
         return None
-    doi = str(doi).lower().strip()
+
+    doi = str(doi)
+
+    doi = urllib.parse.unquote(doi)
+
+    doi = doi.lower().strip()
     doi = re.sub(r'^https?://(dx\.)?doi\.org/', '', doi)
-    return doi.rstrip('/') or None
+    doi = doi.rstrip('/')
+
+    doi = doi.replace("\r", "").replace("\n", "")
+
+    return doi or None
+
 
 # ---------------------------------------------------------------------------
 # Clients
@@ -371,9 +381,10 @@ async def _process_collection(
         merged = _merge_articles([ads_arts, oa_arts, cr_arts])
 
         return collection_id, {
-            "doi":             doi,
-            "citing_count":    len(merged),
+            "doi": doi,
+            "citing_count": len(merged),
             "citing_articles": merged,
+            "_status": "done"
         }
 
 # ---------------------------------------------------------------------------
@@ -427,6 +438,15 @@ async def run(force_refresh: bool, verbose: bool):
     cr_lock  = asyncio.Lock()
 
     ads_client, oa_client, cr_client = _make_clients(token)
+
+    for cid in todo.keys():
+        if cid not in results:
+            results[cid] = {
+                "doi": collections_with_doi[cid],
+                "citing_count": 0,
+                "citing_articles": [],
+                "_status": "pending"
+            }
 
     async with ads_client, oa_client, cr_client:
         tasks = [
