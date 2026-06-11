@@ -1,15 +1,15 @@
 """
+graph_viz.py
 Construit et visualise le graphe dataset → articles citants.
 
-Sources :
-  - doi_by_collection.json  : métadonnées des collections (description, niveau, cibles...)
-  - citing_articles.json    : articles citant chaque dataset (ADS + OpenAlex + Crossref)
+Source :
+  - citing_articles.json : métadonnées + articles citant chaque dataset
 
 Usage :
     python graph_viz.py
-    python graph_viz.py --doi doi_by_collection.json --cit citing_articles.json -o graph.html
-    python graph_viz.py --min-citations 2   # filtre les datasets avec peu de citations
-    python graph_viz.py --targets Mars      # filtre par corps céleste
+    python graph_viz.py --cit citing_articles.json -o graph.html
+    python graph_viz.py --min-citations 2
+    python graph_viz.py --targets Mars
 """
 
 import argparse
@@ -18,88 +18,169 @@ import re
 from pathlib import Path
 
 import networkx as nx
-from pathlib import Path
 
 Path("docs").mkdir(exist_ok=True)
 
 ############################################################################
-# Chargement
+# Couleurs
 ############################################################################
 
-def load_data(doi_path: str, cit_path: str) -> tuple[dict, dict]:
-    doi_map = json.loads(Path(doi_path).read_text(encoding="utf-8"))
-    cit_map = json.loads(Path(cit_path).read_text(encoding="utf-8"))
-    return doi_map, cit_map
+BODY_COLORS = {
+    "mercury": "#b5a99a",
+    "venus":   "#e8c97a",
+    "earth":   "#4a90d9",
+    "moon":    "#c0bdb8",
+    "mars":    "#c1440e",
+}
+BODY_DEFAULT = "#888888"
+ARTICLE_COLOR = "#d0d8e0"  # Gris clair pour les articles
 
+############################################################################
+# Helpers pour la détection des corps célestes
+############################################################################
+
+def _find_body_in_meta(meta: dict) -> list[str]:
+    """Cherche les corps célestes dans tous les champs pertinents de meta."""
+    body_keywords = {
+        "mercury": ["mercury", "hermes"],
+        "venus": ["venus", "aphrodite"],
+        "earth": ["earth", "terre"],
+        "moon": ["moon", "lune"],
+        "mars": ["mars", "arès"],
+    }
+    fields_to_check = ["name", "target", "mission", "description", "instrument", "identifier"]
+    found_bodies = set()
+    for field in fields_to_check:
+        value = meta.get(field, "")
+        if isinstance(value, list):
+            value = " ".join(value)
+        if isinstance(value, str):
+            value_lower = value.lower()
+            for body, keywords in body_keywords.items():
+                for keyword in keywords:
+                    if keyword in value_lower:
+                        found_bodies.add(body)
+    return list(found_bodies)
+
+def _body_color(meta: dict) -> str:
+    """Retourne la couleur du premier corps céleste reconnu dans meta."""
+    bodies = _find_body_in_meta(meta)
+    for body in bodies:
+        if body in BODY_COLORS:
+            return BODY_COLORS[body]
+    return BODY_DEFAULT
+
+def _body_label(meta: dict) -> str:
+    """Retourne le label du premier corps céleste reconnu dans meta."""
+    bodies = _find_body_in_meta(meta)
+    for body in bodies:
+        if body in BODY_COLORS:
+            return body.capitalize()
+    return "Others"
+
+############################################################################
+# Helpers
+############################################################################
 
 def _get_doi(entry) -> str | None:
     if isinstance(entry, dict):
         return entry.get("doi")
     return entry or None
 
-
 def _get_meta(entry) -> dict:
     if isinstance(entry, dict):
         return entry
     return {"doi": entry}
+
+def _norm(doi) -> str | None:
+    if not doi:
+        return None
+    if isinstance(doi, list):
+        doi = doi[0] if doi else None
+    if not doi:
+        return None
+    s = str(doi).lower().strip()
+    s = re.sub(r'^https?://(dx\.)?doi\.org/', '', s)
+    return s.rstrip('/') or None
 
 ############################################################################
 # Construction du graphe NetworkX
 ############################################################################
 
 def build_graph(
-    doi_map: dict,
     cit_map: dict,
     min_citations: int = 0,
     target_filter: str | None = None,
 ) -> nx.DiGraph:
     G = nx.DiGraph()
-
-    # Index des articles par DOI normalisé pour déduplication inter-datasets
-    article_index: dict[str, str] = {}   # doi_norm -> node_id
-
-    def _norm(doi) -> str | None:
-        if not doi:
-            return None
-        if isinstance(doi, list):
-            doi = doi[0] if doi else None
-        if not doi:
-            return None
-        s = str(doi).lower().strip()
-        s = re.sub(r'^https?://(dx\.)?doi\.org/', '', s)
-        return s.rstrip('/') or None
+    article_index: dict[str, str] = {}
 
     for cid, cit_entry in cit_map.items():
         articles = cit_entry.get("citing_articles", [])
 
-        # Filtre min_citations
         if len(articles) < min_citations:
             continue
 
-        # Métadonnées du dataset
-        meta = _get_meta(doi_map.get(cid, {}))
-        targets = meta.get("targets", [])
-        if isinstance(targets, str):
-            targets = [targets]
+        meta = _get_meta(cit_entry)
 
-        # Filtre target
         if target_filter:
-            if not any(target_filter.lower() in t.lower() for t in targets):
+            tf = target_filter.lower()
+            bodies = _find_body_in_meta(meta)
+            if not any(tf in b for b in bodies):
                 continue
 
-        doi = _get_doi(meta) or cit_entry.get("doi", "")
-        label = meta.get("title") or cid
+        doi   = _get_doi(meta) or ""
+        label = meta.get("title") or meta.get("name") or cid
+        color = _body_color(meta)
+        body  = _body_label(meta)
+
+        n_cit = len(articles)
+        size  = max(14, min(44, 14 + n_cit // 3))
+
+        # Tooltip panel dataset
+        doi_display = doi or "—"
+        doi_link    = f'<a href="https://doi.org/{doi}" target="_blank">{doi}</a>' if doi else "—"
+
+        # Champs PDS scrappés : on affiche tout ce qui est présent
+        pds_fields_html = ""
+        skip_keys = {
+            "doi", "citing_articles", "citing_count", "_status",
+            "targets", "title", "description", "name", "mission", "instrument", "identifier"
+        }
+        for k, v in meta.items():
+            if k in skip_keys or not v:
+                continue
+            if isinstance(v, (dict, list)):
+                continue
+            label_k = k.replace("_", " ").capitalize()
+            pds_fields_html += f'<tr><td class="pk">{label_k}</td><td>{v}</td></tr>'
+
+        targets_str = ", ".join(_find_body_in_meta(meta)) if _find_body_in_meta(meta) else "—"
+
+        panel_html = f"""
+<div class="ph-type dataset">DATASET</div>
+<div class="ph-title">{label}</div>
+<div class="ph-body ph-body-color" style="--body-color:{color}">
+  <span class="ph-dot" style="background:{color}"></span>{body}
+</div>
+<div class="ph-section">
+  <div class="ph-row"><span class="ph-key">DOI</span><span class="ph-val">{doi_link}</span></div>
+  <div class="ph-row"><span class="ph-key">Cibles</span><span class="ph-val">{targets_str}</span></div>
+  <div class="ph-row"><span class="ph-key">Citations</span><span class="ph-val">{n_cit}</span></div>
+</div>
+{f'<table class="ph-table">{pds_fields_html}</table>' if pds_fields_html else ""}
+"""
 
         G.add_node(cid,
-            group        = "dataset",
-            label        = label,
-            doi          = doi,
-            description  = meta.get("description", ""),
-            product_name = meta.get("product_name", ""),
-            proc_level   = meta.get("processing_level", "unknown"),
-            targets      = ", ".join(targets),
-            n_products   = meta.get("n_products") or "",
-            n_citations  = len(articles),
+            group       = "dataset",
+            label       = label,
+            doi         = doi,
+            color       = color,
+            body        = body,
+            targets     = targets_str,
+            n_citations = n_cit,
+            size        = size,
+            panelHtml   = panel_html.strip(),
         )
 
         for art in articles:
@@ -109,33 +190,41 @@ def build_graph(
 
             art_doi = _norm(art.get("doi"))
             authors = art.get("authors", [])
-            if isinstance(authors, list):
-                author_str = "; ".join(authors[:3])
-                if len(authors) > 3:
-                    author_str += " et al."
-            else:
-                author_str = str(authors)
+            author_str = "; ".join(authors[:3]) + (" et al." if len(authors) > 3 else "") if isinstance(authors, list) else str(authors)
+            year    = art.get("year") or ""
+            sources = art.get("sources", [])
+            if isinstance(sources, set):
+                sources = list(sources)
+            sources_str = ", ".join(sorted(sources))
+            abstract = art.get("abstract", "") or "—"
 
-            # Déduplication : même article cité par plusieurs datasets
             if art_doi and art_doi in article_index:
                 node_id = article_index[art_doi]
             else:
-                node_id = art_doi or title  # fallback sur le titre si pas de DOI
+                node_id = art_doi or title
                 article_index[art_doi or title] = node_id
 
-                sources = art.get("sources", [])
-                if isinstance(sources, set):
-                    sources = list(sources)
-
+                art_doi_link = f'<a href="https://doi.org/{art_doi}" target="_blank">{art_doi}</a>' if art_doi else "—"
+                art_panel = f"""
+<div class="ph-type article">ARTICLE</div>
+<div class="ph-title">{title}</div>
+<div class="ph-meta">{year} · {author_str}</div>
+<div class="ph-section">
+  <div class="ph-row"><span class="ph-key">DOI</span><span class="ph-val">{art_doi_link}</span></div>
+  <div class="ph-row"><span class="ph-key">Sources</span><span class="ph-val">{sources_str}</span></div>
+</div>
+<div class="ph-abstract">{abstract[:600]}{"…" if len(abstract) > 600 else ""}</div>
+"""
                 G.add_node(node_id,
-                    group    = "article",
-                    label    = title[:60],
-                    title    = title,
-                    doi      = art_doi or "",
-                    authors  = author_str,
-                    year     = art.get("year") or "",
-                    abstract = art.get("abstract", ""),
-                    sources  = ", ".join(sources),
+                    group     = "article",
+                    label     = title[:40],
+                    doi       = art_doi or "",
+                    authors   = author_str,
+                    year      = year,
+                    abstract  = abstract,
+                    sources   = sources_str,
+                    parent    = cid,
+                    panelHtml = art_panel.strip(),
                 )
 
             if not G.has_edge(cid, node_id):
@@ -150,161 +239,229 @@ def build_graph(
 def print_stats(G: nx.DiGraph):
     datasets = [n for n, d in G.nodes(data=True) if d.get("group") == "dataset"]
     articles = [n for n, d in G.nodes(data=True) if d.get("group") == "article"]
-
-    print(f"Datasets     : {len(datasets)}")
-    print(f"Articles     : {len(articles)}")
-    print(f"Liens        : {G.number_of_edges()}")
-
-    # Top datasets par citations
+    print(f"Datasets : {len(datasets)}")
+    print(f"Articles : {len(articles)}")
+    print(f"Liens    : {G.number_of_edges()}")
     top = sorted(datasets, key=lambda n: G.nodes[n].get("n_citations", 0), reverse=True)[:10]
     print("\nTop datasets par citations :")
     for n in top:
         d = G.nodes[n]
-        print(f"  {d.get('n_citations'):4d}  {n}  [{d.get('proc_level')}]")
-
-    # Articles cités par plusieurs datasets
-    multi = [(n, G.in_degree(n)) for n in articles if G.in_degree(n) > 1]
-    multi.sort(key=lambda x: x[1], reverse=True)
-    if multi:
-        print(f"\nArticles citant plusieurs datasets (top 5) :")
-        for n, deg in multi[:5]:
-            title = G.nodes[n].get("title", n)[:70]
-            print(f"  {deg} datasets  {title}")
+        print(f"  {d.get('n_citations'):4d}  {n}  [{d.get('body')}]")
 
 ############################################################################
 # Export HTML vis.js
 ############################################################################
 
 def export_html(G: nx.DiGraph, output: str):
-    COLOR = {
-        "dataset": "#e07b39",
-        "article": "#4a90d9",
-    }
-    SIZE = {
-        "dataset": 20,
-        "article": 10,
-    }
-
     nodes_data = []
     for node_id, attr in G.nodes(data=True):
-        group  = attr.get("group", "article")
-        proc   = attr.get("proc_level", "")
-        color  = COLOR.get(group, "#aaa")
-
-        # Datasets : taille proportionnelle aux citations
-        n_cit = attr.get("n_citations", 0)
-        size  = SIZE.get(group, 10)
-        if group == "dataset" and n_cit:
-            size = max(14, min(40, 14 + n_cit // 5))
-
-        # Tooltip HTML affiché dans le panel latéral
+        group = attr.get("group", "article")
         if group == "dataset":
-            panel_html = f"""
-<b>{attr.get('label', node_id)}</b><br>
-<small style="color:#888">{attr.get('proc_level','').upper()} · {attr.get('targets','')} · {attr.get('n_products','')} produits</small><br><br>
-<b>DOI :</b> <a href="https://doi.org/{attr.get('doi','')}" target="_blank">{attr.get('doi','')}</a><br><br>
-<b>Dataset :</b> {attr.get('product_name','')}<br><br>
-<b>Description :</b><br>{attr.get('description','') or '—'}<br><br>
-<b>Citations :</b> {attr.get('n_citations', 0)}
-"""
+            nodes_data.append({
+                "id": node_id,
+                "label": (attr.get("label") or node_id)[:35],
+                "color": {
+                    "background": attr.get("color", BODY_DEFAULT),
+                    "border": "#fff",
+                    "highlight": {"background": attr.get("color", BODY_DEFAULT), "border": "#fff"},
+                    "hover": {"background": attr.get("color", BODY_DEFAULT), "border": "#fff"},
+                },
+                "size": attr.get("size", 18),
+                "group": "dataset",
+                "hidden": False,
+                "panelHtml": attr.get("panelHtml", ""),
+            })
         else:
-            panel_html = f"""
-<b>{attr.get('title', node_id)}</b><br>
-<small style="color:#888">{attr.get('year','')} · {attr.get('authors','')}</small><br><br>
-<b>DOI :</b> <a href="https://doi.org/{attr.get('doi','')}" target="_blank">{attr.get('doi','')}</a><br><br>
-<b>Sources :</b> {attr.get('sources','')}<br><br>
-<b>Abstract :</b><br>{attr.get('abstract','') or '—'}
-"""
+            nodes_data.append({
+                "id": node_id,
+                "label": (attr.get("label") or node_id)[:35],
+                "color": {
+                    "background": ARTICLE_COLOR,
+                    "border": "#999",
+                    "highlight": {"background": "#fff", "border": "#666"},
+                    "hover": {"background": "#fff", "border": "#888"},
+                },
+                "size": 8,
+                "group": "article",
+                "hidden": True,
+                "parent": attr.get("parent", ""),
+                "panelHtml": attr.get("panelHtml", ""),
+            })
 
-        nodes_data.append({
-            "id":        node_id,
-            "label":     (attr.get("label") or node_id)[:35],
-            "color":     color,
-            "size":      size,
-            "group":     group,
-            "panelHtml": panel_html.strip(),
-        })
+    edges_data = [{"from": u, "to": v, "hidden": True} for u, v in G.edges()]
 
-    edges_data = [{"from": u, "to": v} for u, v in G.edges()]
-
-    nodes_json = json.dumps(nodes_data, ensure_ascii=False)
-    edges_json = json.dumps(edges_data, ensure_ascii=False)
+    # Légende corps célestes
+    legend_items = [{"label": k.capitalize(), "color": v} for k, v in BODY_COLORS.items()]
+    legend_items.append({"label": "Others", "color": BODY_DEFAULT})
+    legend_items.append({"label": "Article", "color": ARTICLE_COLOR})
 
     n_datasets = sum(1 for d in nodes_data if d["group"] == "dataset")
     n_articles = sum(1 for d in nodes_data if d["group"] == "article")
+
+    nodes_json  = json.dumps(nodes_data, ensure_ascii=False)
+    edges_json  = json.dumps(edges_data, ensure_ascii=False)
+    legend_json = json.dumps(legend_items, ensure_ascii=False)
 
     html = f"""<!DOCTYPE html>
 <html lang="fr">
 <head>
   <meta charset="utf-8">
-  <title>Dataset → Articles</title>
+  <title>PDS Datasets — Citations</title>
   <script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
   <style>
-    * {{ box-sizing: border-box; margin: 0; padding: 0; }}
-    html, body {{ height: 100%; font-family: system-ui, sans-serif; overflow: hidden; background: #f0f2f5; }}
+    *, *::before, *::after {{ box-sizing: border-box; margin: 0; padding: 0; }}
+    html, body {{
+      height: 100%; font-family: 'Inter', system-ui, sans-serif;
+      overflow: hidden; background: #1a1d26; color: #e0e2e9;
+    }}
 
+    /* ── Topbar ── */
     #topbar {{
-      display: flex; align-items: center; gap: 20px;
-      padding: 8px 16px; background: #1a1a2e; color: #eee; font-size: 13px;
+      display: flex; align-items: center; gap: 18px;
+      height: 44px; padding: 0 18px;
+      background: #222831; border-bottom: 1px solid #333;
+      font-size: 12px; color: #b0b8c3; flex-shrink: 0;
     }}
-    #topbar h1 {{ font-size: 15px; font-weight: 600; color: #fff; margin-right: 8px; }}
-    .stat {{ color: #aaa; }}
-    .stat b {{ color: #fff; }}
-
-    #legend {{ display: flex; gap: 16px; margin-left: auto; }}
-    .leg {{ display: flex; align-items: center; gap: 6px; font-size: 12px; }}
-    .dot {{ width: 11px; height: 11px; border-radius: 50%; }}
-
+    #topbar h1 {{
+      font-size: 13px; font-weight: 600; color: #f0f2f5;
+      letter-spacing: .03em; margin-right: 4px;
+    }}
+    .stat b {{ color: #f0f2f5; }}
     #search {{
-      padding: 4px 10px; border-radius: 4px; border: none;
-      background: #2d2d44; color: #eee; font-size: 13px; width: 200px;
+      margin-left: auto;
+      padding: 5px 11px; border-radius: 5px;
+      border: 1px solid #3a3f4a; background: #2a2d36;
+      color: #e0e2e9; font-size: 12px; width: 190px; outline: none;
+    }}
+    #search:focus {{ border-color: #5d9cec; }}
+
+    /* ── Legend ── */
+    #legend {{
+      display: flex; gap: 14px; align-items: center;
+      padding: 0 18px; height: 32px;
+      background: #222831; border-bottom: 1px solid #333;
+      font-size: 11px; color: #b0b8c3; flex-shrink: 0;
+    }}
+    .leg {{ display: flex; align-items: center; gap: 5px; }}
+    .leg-dot {{ width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }}
+    .leg-art {{
+      width: 10px; height: 10px; border-radius: 50%;
+      background: {ARTICLE_COLOR}; border: 1px solid #999; flex-shrink: 0;
     }}
 
-    #main {{ display: flex; height: calc(100% - 40px); }}
-
+    /* ── Layout ── */
+    #main {{ display: flex; height: calc(100% - 76px); }}
     #graph-container {{ flex: 1; height: 100%; }}
 
+    /* ── Panel ── */
     #panel {{
-      width: 340px; min-width: 280px; height: 100%;
-      overflow-y: auto; background: #fff;
-      border-left: 1px solid #ddd; padding: 20px; font-size: 13px;
+      width: 320px; min-width: 280px; height: 100%;
+      overflow-y: auto; background: #222831;
+      border-left: 1px solid #333; padding: 22px 18px;
+      font-size: 12px; line-height: 1.6;
     }}
-    #panel h2 {{ font-size: 14px; color: #1a1a2e; margin-bottom: 6px; line-height: 1.4; }}
-    #panel .meta {{ color: #888; font-size: 11px; margin-bottom: 14px; }}
-    #panel .body {{ color: #444; line-height: 1.7; }}
-    #panel a {{ color: #4a90d9; }}
+    #panel-placeholder {{
+      color: #8a94a6; font-size: 12px;
+      margin-top: 60px; text-align: center; line-height: 2;
+    }}
+    #panel-placeholder svg {{ opacity: .4; margin-bottom: 10px; display: block; margin-inline: auto; }}
 
-    #panel-placeholder {{ color: #aaa; font-size: 13px; margin-top: 40px; text-align: center; }}
+    /* Panel HTML components */
+    .ph-type {{
+      font-size: 9px; font-weight: 700; letter-spacing: .12em;
+      padding: 2px 7px; border-radius: 3px; display: inline-block;
+      margin-bottom: 8px; text-shadow: 0 0 2px rgba(0, 0, 0, 0.5);
+    }}
+    .ph-type.dataset {{ background: #3a2e1a; color: #ffa500; }}
+    .ph-type.article {{ background: #1a2a3a; color: #5d9cec; }}
+    .ph-title {{
+      font-size: 14px; font-weight: 600; color: #f0f2f5;
+      margin-bottom: 8px; line-height: 1.4; text-shadow: 0 0 2px rgba(0, 0, 0, 0.5);
+    }}
+    .ph-meta {{ color: #8a94a6; font-size: 11px; margin-bottom: 12px; }}
+    .ph-body {{ display: flex; align-items: center; gap: 6px;
+                font-size: 11px; color: #b0b8c3; margin-bottom: 14px; }}
+    .ph-dot {{ width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }}
+    .ph-section {{
+      margin-bottom: 14px; border-top: 1px solid #3a3f4a; padding-top: 12px;
+    }}
+    .ph-row {{ display: flex; gap: 8px; margin-bottom: 6px; align-items: baseline; }}
+    .ph-key {{
+      color: #8a94a6; font-size: 10px; text-transform: uppercase;
+      letter-spacing: .06em; min-width: 80px; flex-shrink: 0;
+    }}
+    .ph-val {{ color: #e0e2e9; font-size: 12px; }}
+    .ph-val a {{ color: #5d9cec; text-decoration: none; }}
+    .ph-val a:hover {{ text-decoration: underline; }}
+    .ph-table {{
+      width: 100%; border-collapse: collapse;
+      margin-bottom: 14px; border-top: 1px solid #3a3f4a; padding-top: 4px;
+    }}
+    .ph-table td {{ padding: 3px 0; font-size: 11px; vertical-align: top; }}
+    .pk {{
+      color: #8a94a6; text-transform: uppercase; font-size: 10px;
+      letter-spacing: .05em; min-width: 110px; padding-right: 8px;
+    }}
+    .ph-abstract {{
+      font-size: 11px; color: #a0a8b3; line-height: 1.7;
+      border-top: 1px solid #3a3f4a; padding-top: 12px; margin-top: 4px;
+    }}
   </style>
 </head>
 <body>
 
 <div id="topbar">
-  <h1>Dataset → Articles citants</h1>
+  <h1>PDS Datasets — Citations</h1>
   <span class="stat"><b>{n_datasets}</b> datasets</span>
   <span class="stat"><b>{n_articles}</b> articles</span>
   <span class="stat"><b>{G.number_of_edges()}</b> liens</span>
-  <input id="search" type="text" placeholder="Rechercher un nœud…">
-  <div id="legend">
-    <div class="leg"><div class="dot" style="background:#e07b39"></div>Dataset</div>
-    <div class="leg"><div class="dot" style="background:#4a90d9"></div>Article</div>
-  </div>
+  <input id="search" type="text" placeholder="Rechercher…">
 </div>
+
+<div id="legend"></div>
 
 <div id="main">
   <div id="graph-container"></div>
   <div id="panel">
-    <div id="panel-placeholder">Cliquez sur un nœud<br>pour afficher ses détails</div>
+    <div id="panel-placeholder">
+      <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+        <circle cx="12" cy="12" r="10"/><path d="M12 8v4m0 4h.01"/>
+      </svg>
+      Cliquez sur un dataset<br>pour explorer ses citations
+    </div>
     <div id="panel-content" style="display:none"></div>
   </div>
 </div>
 
 <script>
-const nodesData = {nodes_json};
-const edgesData = {edges_json};
+const LEGEND = {legend_json};
+const legendEl = document.getElementById("legend");
+LEGEND.forEach(item => {{
+  const div = document.createElement("div");
+  div.className = "leg";
+  const dot = document.createElement("div");
+  dot.className = item.label === "Article" ? "leg-art" : "leg-dot";
+  if (item.label !== "Article") dot.style.background = item.color;
+  const lbl = document.createElement("span");
+  lbl.textContent = item.label;
+  div.appendChild(dot); div.appendChild(lbl);
+  legendEl.appendChild(div);
+}});
 
-const nodes = new vis.DataSet(nodesData);
-const edges = new vis.DataSet(edgesData);
+const allNodes = {nodes_json};
+const allEdges = {edges_json};
+
+// Index parent -> [child node ids]
+const childrenOf = {{}};
+allNodes.forEach(n => {{
+  if (n.group === "article" && n.parent) {{
+    if (!childrenOf[n.parent]) childrenOf[n.parent] = [];
+    childrenOf[n.parent].push(n.id);
+  }}
+}});
+
+const nodes = new vis.DataSet(allNodes);
+const edges = new vis.DataSet(allEdges);
 
 const net = new vis.Network(
   document.getElementById("graph-container"),
@@ -313,48 +470,86 @@ const net = new vis.Network(
     physics: {{
       solver: "forceAtlas2Based",
       forceAtlas2Based: {{
-        gravitationalConstant: -80,
+        gravitationalConstant: -100,
         centralGravity: 0.01,
-        springLength: 120,
-        springConstant: 0.06,
+        springLength: 140,
+        springConstant: 0.05,
         damping: 0.4,
       }},
-      stabilization: {{ iterations: 300 }},
+      stabilization: {{ iterations: 400 }},
     }},
     edges: {{
-      arrows: {{ to: {{ enabled: true, scaleFactor: 0.4 }} }},
-      color: {{ color: "#ccc", opacity: 0.6 }},
+      arrows: {{ to: {{ enabled: true, scaleFactor: 0.35 }} }},
+      color: {{ color: "#5a6a8a", opacity: 0.9 }},
       smooth: {{ type: "continuous" }},
-      width: 0.8,
+      width: 1.2,
     }},
     nodes: {{
       shape: "dot",
-      font: {{ size: 11, color: "#333" }},
-      borderWidth: 1.5,
+      font: {{ size: 12, color: "#e0e2e9" }},
+      borderWidth: 2,
     }},
-    interaction: {{ hover: true, tooltipDelay: 200 }},
+    interaction: {{ hover: true, tooltipDelay: 150 }},
   }}
 );
 
 net.once("stabilizationIterationsDone", () => net.setOptions({{ physics: false }}));
 
+// État : quel dataset est actuellement ouvert
+let openDataset = null;
+
+function showChildren(datasetId) {{
+  const kids = childrenOf[datasetId] || [];
+  nodes.update(kids.map(id => ({{ id, hidden: false }})));
+  const edgeUpdates = [];
+  edges.forEach(e => {{ if (e.from === datasetId) edgeUpdates.push({{ id: e.id, hidden: false }}); }});
+  edges.update(edgeUpdates);
+}}
+
+function hideChildren(datasetId) {{
+  const kids = childrenOf[datasetId] || [];
+  nodes.update(kids.map(id => ({{ id, hidden: true }})));
+  const edgeUpdates = [];
+  edges.forEach(e => {{ if (e.from === datasetId) edgeUpdates.push({{ id: e.id, hidden: true }}); }});
+  edges.update(edgeUpdates);
+}}
+
 net.on("click", (params) => {{
   if (!params.nodes.length) return;
-  const node = nodes.get(params.nodes[0]);
+  const nodeId = params.nodes[0];
+  const node   = nodes.get(nodeId);
+
+  // Affiche le panneau
   document.getElementById("panel-placeholder").style.display = "none";
   const content = document.getElementById("panel-content");
   content.style.display = "block";
   content.innerHTML = node.panelHtml;
+
+  if (node.group === "dataset") {{
+    if (openDataset === nodeId) {{
+      // Reclique sur le même dataset : on ferme
+      hideChildren(nodeId);
+      openDataset = null;
+    }} else {{
+      // Ferme l'ancien si besoin
+      if (openDataset) hideChildren(openDataset);
+      showChildren(nodeId);
+      openDataset = nodeId;
+    }}
+  }}
 }});
 
 // Recherche
 document.getElementById("search").addEventListener("input", function() {{
   const q = this.value.toLowerCase().trim();
   if (!q) {{ net.unselectAll(); return; }}
-  const match = nodesData.filter(n => n.label.toLowerCase().includes(q) || n.id.toLowerCase().includes(q));
+  const match = allNodes.filter(n =>
+    n.group === "dataset" &&
+    (n.label.toLowerCase().includes(q) || n.id.toLowerCase().includes(q))
+  );
   if (match.length) {{
     net.selectNodes(match.map(n => n.id));
-    net.focus(match[0].id, {{ scale: 1.2, animation: true }});
+    net.focus(match[0].id, {{ scale: 1.3, animation: true }});
   }}
 }});
 </script>
@@ -370,22 +565,18 @@ document.getElementById("search").addEventListener("input", function() {{
 
 def main():
     parser = argparse.ArgumentParser(description="Visualise le graphe dataset → articles citants")
-    parser.add_argument("--doi", default="doi_by_collection.json")
     parser.add_argument("--cit", default="citing_articles.json")
     parser.add_argument("-o", "--output", default="docs/index.html")
-    parser.add_argument("--min-citations", type=int, default=0,
-                        help="Filtre les datasets avec moins de N citations")
-    parser.add_argument("--targets", default=None,
-                        help="Filtre par corps céleste (ex: Mars, Moon)")
+    parser.add_argument("--min-citations", type=int, default=0)
+    parser.add_argument("--targets", default=None)
     args = parser.parse_args()
 
-    doi_map, cit_map = load_data(args.doi, args.cit)
-    G = build_graph(doi_map, cit_map,
+    cit_map = json.loads(Path(args.cit).read_text(encoding="utf-8"))
+    G = build_graph(cit_map,
                     min_citations=args.min_citations,
                     target_filter=args.targets)
     print_stats(G)
     export_html(G, args.output)
-
 
 if __name__ == "__main__":
     main()
