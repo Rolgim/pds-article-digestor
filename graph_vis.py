@@ -332,7 +332,7 @@ def export_html(G: nx.DiGraph, output: str):
 <html lang="fr">
 <head>
   <meta charset="utf-8">
-  <title>PDSSP Datasets & Citations</title>
+  <title>Planetary Datasets & Citations</title>
   <script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
   <style>
     *, *::before, *::after {{ box-sizing: border-box; margin: 0; padding: 0; }}
@@ -442,7 +442,7 @@ def export_html(G: nx.DiGraph, output: str):
 <body>
 
 <div id="topbar">
-  <h1>PDSSP Datasets &amp; Citations</h1>
+  <h1>Planetary Datasets &amp; Citations</h1>
   <span class="stat"><b>{n_datasets}</b> datasets</span>
   <span class="stat"><b>{n_articles}</b> citations</span>
   <span class="stat"><b>{G.number_of_edges()}</b> liens</span>
