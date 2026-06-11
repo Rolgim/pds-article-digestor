@@ -1,5 +1,4 @@
 """
-graph_viz.py
 Construit et visualise le graphe dataset → articles citants.
 
 Source :
