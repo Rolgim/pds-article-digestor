@@ -1,5 +1,5 @@
 
-## A tool to visualize articles based on NASA Planetary Data System (PDS) Datasets
+## A tool to visualize articles based on NASA Planetary Data System (PDS)
 
 ```
 dois_scraper.py                 →  doi_by_collection.json  {"cid": "10.XXX/YYY"}
