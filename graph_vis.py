@@ -1,4 +1,5 @@
 """
+graph_viz.py
 Construit et visualise le graphe dataset → articles citants.
 
 Source :
@@ -31,47 +32,66 @@ BODY_COLORS = {
     "moon":    "#c0bdb8",
     "mars":    "#c1440e",
 }
-BODY_DEFAULT = "#888888"
-ARTICLE_COLOR = "#d0d8e0"  # Gris clair pour les articles
+BODY_DEFAULT  = "#888888"
+ARTICLE_COLOR = "#d0d8e0"
 
 ############################################################################
-# Helpers pour la détection des corps célestes
+# Détection des corps célestes
 ############################################################################
 
-def _find_body_in_meta(meta: dict) -> list[str]:
-    """Cherche les corps célestes dans tous les champs pertinents de meta."""
-    body_keywords = {
-        "mercury": ["mercury", "hermes"],
-        "venus": ["venus", "aphrodite"],
-        "earth": ["earth", "terre"],
-        "moon": ["moon", "lune"],
-        "mars": ["mars", "arès"],
-    }
-    fields_to_check = ["name", "target", "mission", "description", "instrument", "identifier"]
-    found_bodies = set()
-    for field in fields_to_check:
+_BODY_KEYWORDS = {
+    "mercury": ["mercury"],
+    "venus":   ["venus"],
+    "earth":   ["earth"],
+    "moon":    ["moon", "lunar"],
+    "mars":    ["mars"],
+}
+
+def _find_body_in_meta(meta: dict, cid: str = "") -> list[str]:
+    """
+    Priorité 1 : préfixe/segment du collection ID
+    Priorité 2 : champs textuels PDS4 + PDS3
+    """
+    cid_lower = cid.lower()
+
+    # Priorité 1a : préfixe explicite  (moon-lro-..., mars-mex-...)
+    for body in _BODY_KEYWORDS:
+        if cid_lower.startswith(body + "-") or f"-{body}-" in cid_lower:
+            return [body]
+
+    # Priorité 1b : champs textuels explicitement cibles
+    target_fields = [
+        "target", "target_information",
+        "name", "identifier",
+        "mission_information", "investigation",
+        "description",
+    ]
+    found = set()
+    for field in target_fields:
         value = meta.get(field, "")
         if isinstance(value, list):
             value = " ".join(value)
-        if isinstance(value, str):
-            value_lower = value.lower()
-            for body, keywords in body_keywords.items():
-                for keyword in keywords:
-                    if keyword in value_lower:
-                        found_bodies.add(body)
-    return list(found_bodies)
+        if not isinstance(value, str):
+            continue
+        value_lower = value.lower()
+        for body, keywords in _BODY_KEYWORDS.items():
+            for kw in keywords:
+                if kw in value_lower:
+                    found.add(body)
 
-def _body_color(meta: dict) -> str:
-    """Retourne la couleur du premier corps céleste reconnu dans meta."""
-    bodies = _find_body_in_meta(meta)
+    return list(found)
+
+
+def _body_color(meta: dict, cid: str = "") -> str:
+    bodies = _find_body_in_meta(meta, cid)
     for body in bodies:
         if body in BODY_COLORS:
             return BODY_COLORS[body]
     return BODY_DEFAULT
 
-def _body_label(meta: dict) -> str:
-    """Retourne le label du premier corps céleste reconnu dans meta."""
-    bodies = _find_body_in_meta(meta)
+
+def _body_label(meta: dict, cid: str = "") -> str:
+    bodies = _find_body_in_meta(meta, cid)
     for body in bodies:
         if body in BODY_COLORS:
             return body.capitalize()
@@ -86,10 +106,12 @@ def _get_doi(entry) -> str | None:
         return entry.get("doi")
     return entry or None
 
+
 def _get_meta(entry) -> dict:
     if isinstance(entry, dict):
         return entry
     return {"doi": entry}
+
 
 def _norm(doi) -> str | None:
     if not doi:
@@ -124,28 +146,25 @@ def build_graph(
 
         if target_filter:
             tf = target_filter.lower()
-            bodies = _find_body_in_meta(meta)
+            bodies = _find_body_in_meta(meta, cid)
             if not any(tf in b for b in bodies):
                 continue
 
-        doi   = _get_doi(meta) or ""
-        label = meta.get("title") or meta.get("name") or cid
-        color = _body_color(meta)
-        body  = _body_label(meta)
+        doi        = _get_doi(meta) or ""
+        label      = meta.get("title") or meta.get("name") or cid
+        node_color = _body_color(meta, cid)   # ← node_color, pas color
+        body       = _body_label(meta, cid)
 
         n_cit = len(articles)
         size  = max(14, min(44, 14 + n_cit // 3))
 
-        # Tooltip panel dataset
-        doi_display = doi or "—"
-        doi_link    = f'<a href="https://doi.org/{doi}" target="_blank">{doi}</a>' if doi else "—"
+        doi_link = f'<a href="https://doi.org/{doi}" target="_blank">{doi}</a>' if doi else "—"
 
-        # Champs PDS scrappés : on affiche tout ce qui est présent
-        pds_fields_html = ""
         skip_keys = {
             "doi", "citing_articles", "citing_count", "_status",
-            "targets", "title", "description", "name", "mission", "instrument", "identifier"
+            "title", "name", "description", "data_set_abstract",
         }
+        pds_fields_html = ""
         for k, v in meta.items():
             if k in skip_keys or not v:
                 continue
@@ -154,32 +173,33 @@ def build_graph(
             label_k = k.replace("_", " ").capitalize()
             pds_fields_html += f'<tr><td class="pk">{label_k}</td><td>{v}</td></tr>'
 
-        targets_str = ", ".join(_find_body_in_meta(meta)) if _find_body_in_meta(meta) else "—"
+        targets_str = ", ".join(_find_body_in_meta(meta, cid)) or "—"
+        desc = meta.get("description") or meta.get("data_set_abstract") or ""
 
         panel_html = f"""
-<div class="ph-type dataset">DATASET</div>
+<div class="ph-type dataset">Dataset</div>
 <div class="ph-title">{label}</div>
-<div class="ph-body ph-body-color" style="--body-color:{color}">
-  <span class="ph-dot" style="background:{color}"></span>{body}
+<div class="ph-body">
+  <span class="ph-dot" style="background:{node_color}"></span>{body}
 </div>
 <div class="ph-section">
   <div class="ph-row"><span class="ph-key">DOI</span><span class="ph-val">{doi_link}</span></div>
-  <div class="ph-row"><span class="ph-key">Cibles</span><span class="ph-val">{targets_str}</span></div>
   <div class="ph-row"><span class="ph-key">Citations</span><span class="ph-val">{n_cit}</span></div>
 </div>
+{f'<div class="ph-desc">{desc}</div>' if desc else ""}
 {f'<table class="ph-table">{pds_fields_html}</table>' if pds_fields_html else ""}
-"""
+""".strip()
 
         G.add_node(cid,
-            group       = "dataset",
-            label       = label,
-            doi         = doi,
-            color       = color,
-            body        = body,
-            targets     = targets_str,
+            nodeGroup  = "dataset",
+            label      = label,
+            doi        = doi,
+            node_color = node_color,   # ← node_color
+            body       = body,
+            targets    = targets_str,
             n_citations = n_cit,
-            size        = size,
-            panelHtml   = panel_html.strip(),
+            size       = size,
+            panelHtml  = panel_html,
         )
 
         for art in articles:
@@ -189,41 +209,48 @@ def build_graph(
 
             art_doi = _norm(art.get("doi"))
             authors = art.get("authors", [])
-            author_str = "; ".join(authors[:3]) + (" et al." if len(authors) > 3 else "") if isinstance(authors, list) else str(authors)
-            year    = art.get("year") or ""
-            sources = art.get("sources", [])
+            author_str = (
+                "; ".join(authors[:3]) + (" et al." if len(authors) > 3 else "")
+                if isinstance(authors, list) else str(authors)
+            )
+            year        = art.get("year") or ""
+            sources     = art.get("sources", [])
             if isinstance(sources, set):
                 sources = list(sources)
             sources_str = ", ".join(sorted(sources))
-            abstract = art.get("abstract", "") or "—"
+            abstract    = art.get("abstract", "") or "—"
 
             if art_doi and art_doi in article_index:
                 node_id = article_index[art_doi]
+                # Nœud déjà créé — on ajoute juste l'arête
             else:
                 node_id = art_doi or title
                 article_index[art_doi or title] = node_id
 
-                art_doi_link = f'<a href="https://doi.org/{art_doi}" target="_blank">{art_doi}</a>' if art_doi else "—"
+                art_doi_link = (
+                    f'<a href="https://doi.org/{art_doi}" target="_blank">{art_doi}</a>'
+                    if art_doi else "—"
+                )
                 art_panel = f"""
-<div class="ph-type article">ARTICLE</div>
+<div class="ph-type article">Citation</div>
 <div class="ph-title">{title}</div>
 <div class="ph-meta">{year} · {author_str}</div>
 <div class="ph-section">
   <div class="ph-row"><span class="ph-key">DOI</span><span class="ph-val">{art_doi_link}</span></div>
   <div class="ph-row"><span class="ph-key">Sources</span><span class="ph-val">{sources_str}</span></div>
 </div>
-<div class="ph-abstract">{abstract[:600]}{"…" if len(abstract) > 600 else ""}</div>
-"""
+<div class="ph-abstract">{abstract[:800]}{"…" if len(abstract) > 800 else ""}</div>
+""".strip()
+
                 G.add_node(node_id,
-                    group     = "article",
-                    label     = title[:40],
+                    nodeGroup = "article",
+                    label     = title,
                     doi       = art_doi or "",
                     authors   = author_str,
                     year      = year,
                     abstract  = abstract,
                     sources   = sources_str,
-                    parent    = cid,
-                    panelHtml = art_panel.strip(),
+                    panelHtml = art_panel,
                 )
 
             if not G.has_edge(cid, node_id):
@@ -236,8 +263,8 @@ def build_graph(
 ############################################################################
 
 def print_stats(G: nx.DiGraph):
-    datasets = [n for n, d in G.nodes(data=True) if d.get("group") == "dataset"]
-    articles = [n for n, d in G.nodes(data=True) if d.get("group") == "article"]
+    datasets = [n for n, d in G.nodes(data=True) if d.get("nodeGroup") == "dataset"]
+    articles = [n for n, d in G.nodes(data=True) if d.get("nodeGroup") == "article"]
     print(f"Datasets : {len(datasets)}")
     print(f"Articles : {len(articles)}")
     print(f"Liens    : {G.number_of_edges()}")
@@ -252,50 +279,51 @@ def print_stats(G: nx.DiGraph):
 ############################################################################
 
 def export_html(G: nx.DiGraph, output: str):
+
     nodes_data = []
     for node_id, attr in G.nodes(data=True):
-        group = attr.get("group", "article")
-        if group == "dataset":
+        node_group = attr.get("nodeGroup", "article")
+        if node_group == "dataset":
+            bg = attr.get("node_color", BODY_DEFAULT)   # ← node_color
             nodes_data.append({
-                "id": node_id,
-                "label": (attr.get("label") or node_id)[:35],
+                "id":        node_id,
+                "label":     (attr.get("label") or node_id)[:35],
                 "color": {
-                    "background": attr.get("color", BODY_DEFAULT),
-                    "border": "#fff",
-                    "highlight": {"background": attr.get("color", BODY_DEFAULT), "border": "#fff"},
-                    "hover": {"background": attr.get("color", BODY_DEFAULT), "border": "#fff"},
+                    "background": bg,
+                    "border":     "#ffffff44",
+                    "highlight":  {"background": bg, "border": "#fff"},
+                    "hover":      {"background": bg, "border": "#fff"},
                 },
-                "size": attr.get("size", 18),
-                "group": "dataset",
-                "hidden": False,
+                "size":      attr.get("size", 18),
+                "nodeGroup": "dataset",
+                "hidden":    False,
                 "panelHtml": attr.get("panelHtml", ""),
             })
         else:
             nodes_data.append({
-                "id": node_id,
-                "label": (attr.get("label") or node_id)[:35],
+                "id":        node_id,
+                "label":     (attr.get("label") or node_id)[:35],
                 "color": {
                     "background": ARTICLE_COLOR,
-                    "border": "#999",
-                    "highlight": {"background": "#fff", "border": "#666"},
-                    "hover": {"background": "#fff", "border": "#888"},
+                    "border":     "#999",
+                    "highlight":  {"background": "#fff", "border": "#666"},
+                    "hover":      {"background": "#fff", "border": "#888"},
                 },
-                "size": 8,
-                "group": "article",
-                "hidden": True,
-                "parent": attr.get("parent", ""),
+                "size":      8,
+                "nodeGroup": "article",
+                "hidden":    True,
                 "panelHtml": attr.get("panelHtml", ""),
             })
 
+    # Arêtes — hidden:true par défaut, révélées à la demande
     edges_data = [{"from": u, "to": v, "hidden": True} for u, v in G.edges()]
 
-    # Légende corps célestes
     legend_items = [{"label": k.capitalize(), "color": v} for k, v in BODY_COLORS.items()]
-    legend_items.append({"label": "Others", "color": BODY_DEFAULT})
+    legend_items.append({"label": "Others",  "color": BODY_DEFAULT})
     legend_items.append({"label": "Article", "color": ARTICLE_COLOR})
 
-    n_datasets = sum(1 for d in nodes_data if d["group"] == "dataset")
-    n_articles = sum(1 for d in nodes_data if d["group"] == "article")
+    n_datasets = sum(1 for d in nodes_data if d["nodeGroup"] == "dataset")
+    n_articles = sum(1 for d in nodes_data if d["nodeGroup"] == "article")
 
     nodes_json  = json.dumps(nodes_data, ensure_ascii=False)
     edges_json  = json.dumps(edges_data, ensure_ascii=False)
@@ -305,7 +333,7 @@ def export_html(G: nx.DiGraph, output: str):
 <html lang="fr">
 <head>
   <meta charset="utf-8">
-  <title>PDS Datasets — Citations</title>
+  <title>PDSSP Datasets & Citations</title>
   <script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
   <style>
     *, *::before, *::after {{ box-sizing: border-box; margin: 0; padding: 0; }}
@@ -343,10 +371,6 @@ def export_html(G: nx.DiGraph, output: str):
     }}
     .leg {{ display: flex; align-items: center; gap: 5px; }}
     .leg-dot {{ width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }}
-    .leg-art {{
-      width: 10px; height: 10px; border-radius: 50%;
-      background: {ARTICLE_COLOR}; border: 1px solid #999; flex-shrink: 0;
-    }}
 
     /* ── Layout ── */
     #main {{ display: flex; height: calc(100% - 76px); }}
@@ -363,23 +387,28 @@ def export_html(G: nx.DiGraph, output: str):
       color: #8a94a6; font-size: 12px;
       margin-top: 60px; text-align: center; line-height: 2;
     }}
-    #panel-placeholder svg {{ opacity: .4; margin-bottom: 10px; display: block; margin-inline: auto; }}
+    #panel-placeholder svg {{
+      opacity: .4; margin-bottom: 10px;
+      display: block; margin-inline: auto;
+    }}
 
-    /* Panel HTML components */
+    /* ── Panel components ── */
     .ph-type {{
       font-size: 9px; font-weight: 700; letter-spacing: .12em;
       padding: 2px 7px; border-radius: 3px; display: inline-block;
-      margin-bottom: 8px; text-shadow: 0 0 2px rgba(0, 0, 0, 0.5);
+      margin-bottom: 8px;
     }}
     .ph-type.dataset {{ background: #3a2e1a; color: #ffa500; }}
     .ph-type.article {{ background: #1a2a3a; color: #5d9cec; }}
     .ph-title {{
       font-size: 14px; font-weight: 600; color: #f0f2f5;
-      margin-bottom: 8px; line-height: 1.4; text-shadow: 0 0 2px rgba(0, 0, 0, 0.5);
+      margin-bottom: 8px; line-height: 1.4;
     }}
     .ph-meta {{ color: #8a94a6; font-size: 11px; margin-bottom: 12px; }}
-    .ph-body {{ display: flex; align-items: center; gap: 6px;
-                font-size: 11px; color: #b0b8c3; margin-bottom: 14px; }}
+    .ph-body {{
+      display: flex; align-items: center; gap: 6px;
+      font-size: 11px; color: #b0b8c3; margin-bottom: 14px;
+    }}
     .ph-dot {{ width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }}
     .ph-section {{
       margin-bottom: 14px; border-top: 1px solid #3a3f4a; padding-top: 12px;
@@ -392,9 +421,13 @@ def export_html(G: nx.DiGraph, output: str):
     .ph-val {{ color: #e0e2e9; font-size: 12px; }}
     .ph-val a {{ color: #5d9cec; text-decoration: none; }}
     .ph-val a:hover {{ text-decoration: underline; }}
+    .ph-desc {{
+      font-size: 11px; color: #8a94a6; line-height: 1.7;
+      margin-bottom: 14px; border-top: 1px solid #3a3f4a; padding-top: 12px;
+    }}
     .ph-table {{
       width: 100%; border-collapse: collapse;
-      margin-bottom: 14px; border-top: 1px solid #3a3f4a; padding-top: 4px;
+      margin-bottom: 14px; border-top: 1px solid #3a3f4a;
     }}
     .ph-table td {{ padding: 3px 0; font-size: 11px; vertical-align: top; }}
     .pk {{
@@ -410,9 +443,9 @@ def export_html(G: nx.DiGraph, output: str):
 <body>
 
 <div id="topbar">
-  <h1>PDS Datasets — Citations</h1>
+  <h1>PDSSP Datasets &amp; Citations</h1>
   <span class="stat"><b>{n_datasets}</b> datasets</span>
-  <span class="stat"><b>{n_articles}</b> articles</span>
+  <span class="stat"><b>{n_articles}</b> citations</span>
   <span class="stat"><b>{G.number_of_edges()}</b> liens</span>
   <input id="search" type="text" placeholder="Rechercher…">
 </div>
@@ -423,7 +456,8 @@ def export_html(G: nx.DiGraph, output: str):
   <div id="graph-container"></div>
   <div id="panel">
     <div id="panel-placeholder">
-      <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+      <svg width="32" height="32" viewBox="0 0 24 24" fill="none"
+           stroke="currentColor" stroke-width="1.5">
         <circle cx="12" cy="12" r="10"/><path d="M12 8v4m0 4h.01"/>
       </svg>
       Cliquez sur un dataset<br>pour explorer ses citations
@@ -439,24 +473,25 @@ LEGEND.forEach(item => {{
   const div = document.createElement("div");
   div.className = "leg";
   const dot = document.createElement("div");
-  dot.className = item.label === "Article" ? "leg-art" : "leg-dot";
-  if (item.label !== "Article") dot.style.background = item.color;
+  dot.className = "leg-dot";
+  dot.style.background = item.color;
+  if (item.label === "Article") dot.style.border = "1px solid #999";
   const lbl = document.createElement("span");
   lbl.textContent = item.label;
-  div.appendChild(dot); div.appendChild(lbl);
+  div.appendChild(dot);
+  div.appendChild(lbl);
   legendEl.appendChild(div);
 }});
 
 const allNodes = {nodes_json};
 const allEdges = {edges_json};
 
-// Index parent -> [child node ids]
+// Index dataset -> [article node ids] construit depuis les arêtes
+// Un article peut apparaître sous plusieurs datasets
 const childrenOf = {{}};
-allNodes.forEach(n => {{
-  if (n.group === "article" && n.parent) {{
-    if (!childrenOf[n.parent]) childrenOf[n.parent] = [];
-    childrenOf[n.parent].push(n.id);
-  }}
+allEdges.forEach(e => {{
+  if (!childrenOf[e.from]) childrenOf[e.from] = [];
+  childrenOf[e.from].push(e.to);
 }});
 
 const nodes = new vis.DataSet(allNodes);
@@ -494,23 +529,43 @@ const net = new vis.Network(
 
 net.once("stabilizationIterationsDone", () => net.setOptions({{ physics: false }}));
 
-// État : quel dataset est actuellement ouvert
 let openDataset = null;
 
 function showChildren(datasetId) {{
   const kids = childrenOf[datasetId] || [];
-  nodes.update(kids.map(id => ({{ id, hidden: false }})));
+  // Un article peut déjà être visible (lié à un autre dataset ouvert) :
+  // on ne le remet pas hidden, on révèle juste les arêtes de ce dataset
+  const nodeUpdates = kids
+    .filter(id => nodes.get(id) && nodes.get(id).hidden)
+    .map(id => ({{ id, hidden: false }}));
+  if (nodeUpdates.length) nodes.update(nodeUpdates);
+
   const edgeUpdates = [];
-  edges.forEach(e => {{ if (e.from === datasetId) edgeUpdates.push({{ id: e.id, hidden: false }}); }});
-  edges.update(edgeUpdates);
+  edges.forEach(e => {{
+    if (e.from === datasetId) edgeUpdates.push({{ id: e.id, hidden: false }});
+  }});
+  if (edgeUpdates.length) edges.update(edgeUpdates);
 }}
 
 function hideChildren(datasetId) {{
   const kids = childrenOf[datasetId] || [];
-  nodes.update(kids.map(id => ({{ id, hidden: true }})));
+
+  // Ne cacher un article que s'il n'est plus lié à aucun dataset ouvert
+  const nodeUpdates = [];
+  kids.forEach(articleId => {{
+    // Vérifie si cet article est aussi enfant d'un autre dataset ouvert
+    const stillVisible = Object.entries(childrenOf).some(([dsId, children]) => {{
+      return dsId !== datasetId && dsId === openDataset && children.includes(articleId);
+    }});
+    if (!stillVisible) nodeUpdates.push({{ id: articleId, hidden: true }});
+  }});
+  if (nodeUpdates.length) nodes.update(nodeUpdates);
+
   const edgeUpdates = [];
-  edges.forEach(e => {{ if (e.from === datasetId) edgeUpdates.push({{ id: e.id, hidden: true }}); }});
-  edges.update(edgeUpdates);
+  edges.forEach(e => {{
+    if (e.from === datasetId) edgeUpdates.push({{ id: e.id, hidden: true }});
+  }});
+  if (edgeUpdates.length) edges.update(edgeUpdates);
 }}
 
 net.on("click", (params) => {{
@@ -518,19 +573,16 @@ net.on("click", (params) => {{
   const nodeId = params.nodes[0];
   const node   = nodes.get(nodeId);
 
-  // Affiche le panneau
   document.getElementById("panel-placeholder").style.display = "none";
   const content = document.getElementById("panel-content");
   content.style.display = "block";
   content.innerHTML = node.panelHtml;
 
-  if (node.group === "dataset") {{
+  if (node.nodeGroup === "dataset") {{
     if (openDataset === nodeId) {{
-      // Reclique sur le même dataset : on ferme
       hideChildren(nodeId);
       openDataset = null;
     }} else {{
-      // Ferme l'ancien si besoin
       if (openDataset) hideChildren(openDataset);
       showChildren(nodeId);
       openDataset = nodeId;
@@ -538,12 +590,11 @@ net.on("click", (params) => {{
   }}
 }});
 
-// Recherche
 document.getElementById("search").addEventListener("input", function() {{
   const q = this.value.toLowerCase().trim();
   if (!q) {{ net.unselectAll(); return; }}
   const match = allNodes.filter(n =>
-    n.group === "dataset" &&
+    n.nodeGroup === "dataset" &&
     (n.label.toLowerCase().includes(q) || n.id.toLowerCase().includes(q))
   );
   if (match.length) {{
@@ -563,7 +614,9 @@ document.getElementById("search").addEventListener("input", function() {{
 ############################################################################
 
 def main():
-    parser = argparse.ArgumentParser(description="Visualise le graphe dataset → articles citants")
+    parser = argparse.ArgumentParser(
+        description="Visualise le graphe dataset → articles citants"
+    )
     parser.add_argument("--cit", default="citing_articles.json")
     parser.add_argument("-o", "--output", default="docs/index.html")
     parser.add_argument("--min-citations", type=int, default=0)
@@ -576,6 +629,7 @@ def main():
                     target_filter=args.targets)
     print_stats(G)
     export_html(G, args.output)
+
 
 if __name__ == "__main__":
     main()
