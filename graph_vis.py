@@ -28,11 +28,10 @@ Path("docs").mkdir(exist_ok=True)
 BODY_COLORS = {
     "mercury": "#b5a99a",
     "venus":   "#e8c97a",
-    "earth":   "#4a90d9",
     "moon":    "#c0bdb8",
     "mars":    "#c1440e",
 }
-BODY_DEFAULT  = "#888888"
+BODY_DEFAULT  = "#4a90d9"
 ARTICLE_COLOR = "#d0d8e0"
 
 ############################################################################
