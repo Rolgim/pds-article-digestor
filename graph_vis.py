@@ -26,13 +26,13 @@ Path("docs").mkdir(exist_ok=True)
 ############################################################################
 
 BODY_COLORS = {
-    "mercury": "#b5a99a",
-    "venus":   "#e8c97a",
+    "mercury": "#BDA266",
+    "venus":   "#F5EB27",
     "moon":    "#c0bdb8",
     "mars":    "#c1440e",
 }
-BODY_DEFAULT  = "#4a90d9"
-ARTICLE_COLOR = "#d0d8e0"
+BODY_DEFAULT  = "#EDEDED"
+ARTICLE_COLOR = "#4a90d9"
 
 ############################################################################
 # Détection des corps célestes
@@ -319,7 +319,7 @@ def export_html(G: nx.DiGraph, output: str):
 
     legend_items = [{"label": k.capitalize(), "color": v} for k, v in BODY_COLORS.items()]
     legend_items.append({"label": "Others",  "color": BODY_DEFAULT})
-    legend_items.append({"label": "Article", "color": ARTICLE_COLOR})
+    legend_items.append({"label": "Citation", "color": ARTICLE_COLOR})
 
     n_datasets = sum(1 for d in nodes_data if d["nodeGroup"] == "dataset")
     n_articles = sum(1 for d in nodes_data if d["nodeGroup"] == "article")
@@ -566,6 +566,24 @@ function hideChildren(datasetId) {{
   }});
   if (edgeUpdates.length) edges.update(edgeUpdates);
 }}
+// État article ouvert
+let openArticle = null;
+
+function showArticleParents(articleId) {{
+  const edgeUpdates = [];
+  edges.forEach(e => {{
+    if (e.to === articleId) edgeUpdates.push({{ id: e.id, hidden: false }});
+  }});
+  if (edgeUpdates.length) edges.update(edgeUpdates);
+}}
+
+function hideArticleParents(articleId) {{
+  const edgeUpdates = [];
+  edges.forEach(e => {{
+    if (e.to === articleId) edgeUpdates.push({{ id: e.id, hidden: true }});
+  }});
+  if (edgeUpdates.length) edges.update(edgeUpdates);
+}}
 
 net.on("click", (params) => {{
   if (!params.nodes.length) return;
@@ -585,6 +603,16 @@ net.on("click", (params) => {{
       if (openDataset) hideChildren(openDataset);
       showChildren(nodeId);
       openDataset = nodeId;
+    }}
+  }}
+  else if (node.nodeGroup === "article") {{
+    if (openArticle === nodeId) {{
+      hideArticleParents(nodeId);
+      openArticle = null;
+    }} else {{
+      if (openArticle) hideArticleParents(openArticle);
+      showArticleParents(nodeId);
+      openArticle = nodeId;
     }}
   }}
 }});
