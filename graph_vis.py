@@ -53,12 +53,10 @@ def _find_body_in_meta(meta: dict, cid: str = "") -> list[str]:
     """
     cid_lower = cid.lower()
 
-    # Priorité 1a : préfixe explicite  (moon-lro-..., mars-mex-...)
     for body in _BODY_KEYWORDS:
         if cid_lower.startswith(body + "-") or f"-{body}-" in cid_lower:
             return [body]
 
-    # Priorité 1b : champs textuels explicitement cibles
     target_fields = [
         "target", "target_information",
         "name", "identifier",
@@ -151,7 +149,7 @@ def build_graph(
 
         doi        = _get_doi(meta) or ""
         label      = meta.get("title") or meta.get("name") or cid
-        node_color = _body_color(meta, cid)   # ← node_color, pas color
+        node_color = _body_color(meta, cid)
         body       = _body_label(meta, cid)
 
         n_cit = len(articles)
@@ -190,15 +188,15 @@ def build_graph(
 """.strip()
 
         G.add_node(cid,
-            nodeGroup  = "dataset",
-            label      = label,
-            doi        = doi,
-            node_color = node_color,   # ← node_color
-            body       = body,
-            targets    = targets_str,
+            nodeGroup   = "dataset",
+            label       = label,
+            doi         = doi,
+            node_color  = node_color,
+            body        = body,
+            targets     = targets_str,
             n_citations = n_cit,
-            size       = size,
-            panelHtml  = panel_html,
+            size        = size,
+            panelHtml   = panel_html,
         )
 
         for art in articles:
@@ -221,7 +219,6 @@ def build_graph(
 
             if art_doi and art_doi in article_index:
                 node_id = article_index[art_doi]
-                # Nœud déjà créé — on ajoute juste l'arête
             else:
                 node_id = art_doi or title
                 article_index[art_doi or title] = node_id
@@ -283,7 +280,7 @@ def export_html(G: nx.DiGraph, output: str):
     for node_id, attr in G.nodes(data=True):
         node_group = attr.get("nodeGroup", "article")
         if node_group == "dataset":
-            bg = attr.get("node_color", BODY_DEFAULT)   # ← node_color
+            bg = attr.get("node_color", BODY_DEFAULT)
             nodes_data.append({
                 "id":        node_id,
                 "label":     (attr.get("label") or node_id)[:35],
@@ -295,6 +292,7 @@ def export_html(G: nx.DiGraph, output: str):
                 },
                 "size":      attr.get("size", 18),
                 "nodeGroup": "dataset",
+                "body":      attr.get("body", "others"),   # ← pour le filtre JS
                 "hidden":    False,
                 "panelHtml": attr.get("panelHtml", ""),
             })
@@ -304,9 +302,9 @@ def export_html(G: nx.DiGraph, output: str):
                 "label":     (attr.get("label") or node_id)[:35],
                 "color": {
                     "background": ARTICLE_COLOR,
-                    "border":     "#999",
-                    "highlight":  {"background": "#fff", "border": "#666"},
-                    "hover":      {"background": "#fff", "border": "#888"},
+                    "border":     "#2a5a9a",
+                    "highlight":  {"background": "#6aaaf0", "border": "#fff"},
+                    "hover":      {"background": "#6aaaf0", "border": "#fff"},
                 },
                 "size":      8,
                 "nodeGroup": "article",
@@ -314,11 +312,10 @@ def export_html(G: nx.DiGraph, output: str):
                 "panelHtml": attr.get("panelHtml", ""),
             })
 
-    # Arêtes — hidden:true par défaut, révélées à la demande
     edges_data = [{"from": u, "to": v, "hidden": True} for u, v in G.edges()]
 
     legend_items = [{"label": k.capitalize(), "color": v} for k, v in BODY_COLORS.items()]
-    legend_items.append({"label": "Others",  "color": BODY_DEFAULT})
+    legend_items.append({"label": "Others",   "color": BODY_DEFAULT})
     legend_items.append({"label": "Citation", "color": ARTICLE_COLOR})
 
     n_datasets = sum(1 for d in nodes_data if d["nodeGroup"] == "dataset")
@@ -368,8 +365,19 @@ def export_html(G: nx.DiGraph, output: str):
       background: #222831; border-bottom: 1px solid #333;
       font-size: 11px; color: #b0b8c3; flex-shrink: 0;
     }}
-    .leg {{ display: flex; align-items: center; gap: 5px; }}
+    .leg {{
+      display: flex; align-items: center; gap: 5px;
+      cursor: pointer; border-radius: 4px;
+      padding: 2px 6px; transition: opacity 0.2s;
+      user-select: none;
+    }}
+    .leg:last-child {{ cursor: default; }}
+    .leg:not(:last-child):hover {{ background: #2a2d36; }}
     .leg-dot {{ width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }}
+    .leg-active {{
+      outline: 1px solid #fff4;
+      background: #2a2d36;
+    }}
 
     /* ── Layout ── */
     #main {{ display: flex; height: calc(100% - 76px); }}
@@ -468,17 +476,66 @@ def export_html(G: nx.DiGraph, output: str):
 <script>
 const LEGEND = {legend_json};
 const legendEl = document.getElementById("legend");
+
+let activeFilter = null;
+
 LEGEND.forEach(item => {{
   const div = document.createElement("div");
   div.className = "leg";
+  div.dataset.body = item.label.toLowerCase();
+
   const dot = document.createElement("div");
   dot.className = "leg-dot";
   dot.style.background = item.color;
-  if (item.label === "Article") dot.style.border = "1px solid #999";
+  if (item.label === "Citation") dot.style.border = "1px solid #2a5a9a";
+
   const lbl = document.createElement("span");
   lbl.textContent = item.label;
   div.appendChild(dot);
   div.appendChild(lbl);
+
+  // Filtre cliquable pour tous sauf "Citation"
+  if (item.label !== "Citation") {{
+    div.addEventListener("click", () => {{
+      const body = div.dataset.body;
+
+      if (activeFilter === body) {{
+        // Désactive le filtre : tout afficher
+        activeFilter = null;
+        nodes.forEach(n => {{
+          if (n.nodeGroup === "dataset") nodes.update({{ id: n.id, hidden: false }});
+        }});
+        legendEl.querySelectorAll(".leg").forEach(l => {{
+          l.style.opacity = "1";
+          l.classList.remove("leg-active");
+        }});
+      }} else {{
+        // Ferme dataset/article ouverts
+        if (openDataset) {{ hideChildren(openDataset); openDataset = null; }}
+        if (openArticle) {{ hideArticleParents(openArticle); openArticle = null; }}
+
+        activeFilter = body;
+
+        nodes.forEach(n => {{
+          if (n.nodeGroup === "dataset") {{
+            const match = n.body && n.body.toLowerCase() === body;
+            nodes.update({{ id: n.id, hidden: !match }});
+          }}
+        }});
+
+        legendEl.querySelectorAll(".leg").forEach(l => {{
+          if (l.dataset.body === body) {{
+            l.style.opacity = "1";
+            l.classList.add("leg-active");
+          }} else {{
+            l.style.opacity = "0.3";
+            l.classList.remove("leg-active");
+          }}
+        }});
+      }}
+    }});
+  }}
+
   legendEl.appendChild(div);
 }});
 
@@ -486,7 +543,6 @@ const allNodes = {nodes_json};
 const allEdges = {edges_json};
 
 // Index dataset -> [article node ids] construit depuis les arêtes
-// Un article peut apparaître sous plusieurs datasets
 const childrenOf = {{}};
 allEdges.forEach(e => {{
   if (!childrenOf[e.from]) childrenOf[e.from] = [];
@@ -529,11 +585,10 @@ const net = new vis.Network(
 net.once("stabilizationIterationsDone", () => net.setOptions({{ physics: false }}));
 
 let openDataset = null;
+let openArticle = null;
 
 function showChildren(datasetId) {{
   const kids = childrenOf[datasetId] || [];
-  // Un article peut déjà être visible (lié à un autre dataset ouvert) :
-  // on ne le remet pas hidden, on révèle juste les arêtes de ce dataset
   const nodeUpdates = kids
     .filter(id => nodes.get(id) && nodes.get(id).hidden)
     .map(id => ({{ id, hidden: false }}));
@@ -548,14 +603,11 @@ function showChildren(datasetId) {{
 
 function hideChildren(datasetId) {{
   const kids = childrenOf[datasetId] || [];
-
-  // Ne cacher un article que s'il n'est plus lié à aucun dataset ouvert
   const nodeUpdates = [];
   kids.forEach(articleId => {{
-    // Vérifie si cet article est aussi enfant d'un autre dataset ouvert
-    const stillVisible = Object.entries(childrenOf).some(([dsId, children]) => {{
-      return dsId !== datasetId && dsId === openDataset && children.includes(articleId);
-    }});
+    const stillVisible = Object.entries(childrenOf).some(([dsId, children]) =>
+      dsId !== datasetId && dsId === openDataset && children.includes(articleId)
+    );
     if (!stillVisible) nodeUpdates.push({{ id: articleId, hidden: true }});
   }});
   if (nodeUpdates.length) nodes.update(nodeUpdates);
@@ -566,8 +618,6 @@ function hideChildren(datasetId) {{
   }});
   if (edgeUpdates.length) edges.update(edgeUpdates);
 }}
-// État article ouvert
-let openArticle = null;
 
 function showArticleParents(articleId) {{
   const edgeUpdates = [];
@@ -604,8 +654,7 @@ net.on("click", (params) => {{
       showChildren(nodeId);
       openDataset = nodeId;
     }}
-  }}
-  else if (node.nodeGroup === "article") {{
+  }} else if (node.nodeGroup === "article") {{
     if (openArticle === nodeId) {{
       hideArticleParents(nodeId);
       openArticle = null;
