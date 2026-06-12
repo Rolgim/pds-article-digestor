@@ -414,8 +414,8 @@ def export_html(G: nx.DiGraph, output: str):
       padding: 2px 7px; border-radius: 3px; display: inline-block;
       margin-bottom: 8px;
     }}
-    .ph-type.dataset {{ background: #3a2e1a; color: #ffa500; }}
-    .ph-type.article {{ background: #1a2a3a; color: #5d9cec; }}
+    .ph-type.dataset {{ background: #E74C3C; color: #f0f2f5; }}
+    .ph-type.article {{ background: #2E86C1; color: #f0f2f5; }}
     .ph-title {{
       font-size: 14px; font-weight: 600; color: #f0f2f5;
       margin-bottom: 8px; line-height: 1.4;
@@ -467,8 +467,8 @@ def export_html(G: nx.DiGraph, output: str):
   <h1>Planetary Datasets &amp; Citations</h1>
   <span class="stat"><b>{n_datasets}</b> datasets</span>
   <span class="stat"><b>{n_articles}</b> citations</span>
-  <span class="stat"><b>{G.number_of_edges()}</b> liens</span>
-  <input id="search" type="text" placeholder="Rechercher…">
+  <span class="stat"><b>{G.number_of_edges()}</b> relationships</span>
+  <input id="search" type="text" placeholder="Search…">
 </div>
 
 <div id="legend"></div>
@@ -481,7 +481,7 @@ def export_html(G: nx.DiGraph, output: str):
            stroke="currentColor" stroke-width="1.5">
         <circle cx="12" cy="12" r="10"/><path d="M12 8v4m0 4h.01"/>
       </svg>
-      Cliquez sur un dataset<br>pour explorer ses citations
+      Click on a dataset<br>to explore its citations
     </div>
     <div id="panel-content" style="display:none"></div>
   </div>
@@ -601,7 +601,7 @@ const net = new vis.Network(
 
 net.on("stabilizationProgress", (params) => {{
   const pct = Math.round(params.iterations / params.total * 100);
-  document.querySelector(".loading-text").textContent = `Stabilisation… ${{pct}}%`;
+  document.querySelector(".loading-text").textContent = `Computing graph… ${{pct}}%`;
 }});
 
 net.once("stabilizationIterationsDone", () => {{
