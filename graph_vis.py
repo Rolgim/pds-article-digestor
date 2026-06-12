@@ -333,6 +333,23 @@ def export_html(G: nx.DiGraph, output: str):
       overflow: hidden; background: #1a1d26; color: #e0e2e9;
     }}
 
+    /* ── Loading overlay ── */
+    #loading-overlay {{
+      position: fixed; inset: 0; z-index: 100;
+      background: #1a1d26;
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      gap: 16px;
+    }}
+    .spinner {{
+      width: 36px; height: 36px; border-radius: 50%;
+      border: 3px solid #2a2d36;
+      border-top-color: #5d9cec;
+      animation: spin 0.8s linear infinite;
+    }}
+    @keyframes spin {{ to {{ transform: rotate(360deg); }} }}
+    .loading-text {{ color: #8a94a6; font-size: 12px; letter-spacing: .03em; }}
+
     /* ── Topbar ── */
     #topbar {{
       display: flex; align-items: center; gap: 18px;
@@ -441,6 +458,11 @@ def export_html(G: nx.DiGraph, output: str):
 </head>
 <body>
 
+<div id="loading-overlay">
+  <div class="spinner"></div>
+  <div class="loading-text">Chargement du graphe…</div>
+</div>
+
 <div id="topbar">
   <h1>Planetary Datasets &amp; Citations</h1>
   <span class="stat"><b>{n_datasets}</b> datasets</span>
@@ -472,9 +494,7 @@ const allEdges = {edges_json};
 
 // ── Index pré-calculés ──────────────────────────────────────────────────
 
-// body -> [dataset ids]
 const nodesByBody = {{}};
-// tous les ids dataset
 const allDatasetIds = [];
 
 allNodes.forEach(n => {{
@@ -486,7 +506,6 @@ allNodes.forEach(n => {{
   }}
 }});
 
-// dataset -> [article ids]  (depuis les arêtes)
 const childrenOf = {{}};
 allEdges.forEach(e => {{
   if (!childrenOf[e.from]) childrenOf[e.from] = [];
@@ -517,12 +536,10 @@ LEGEND.forEach(item => {{
     div.addEventListener("click", () => {{
       const body = div.dataset.body;
 
-      // Ferme tout ce qui est ouvert
       if (openDataset) {{ hideChildren(openDataset); openDataset = null; }}
       if (openArticle) {{ hideArticleParents(openArticle); openArticle = null; }}
 
       if (activeFilter === body) {{
-        // Désactive : tout afficher en batch
         activeFilter = null;
         nodes.update(allDatasetIds.map(id => ({{ id, hidden: false }})));
         legendEl.querySelectorAll(".leg").forEach(l => {{
@@ -530,7 +547,6 @@ LEGEND.forEach(item => {{
           l.classList.remove("leg-active");
         }});
       }} else {{
-        // Active : batch update depuis l'index
         activeFilter = body;
         const matchSet = new Set(nodesByBody[body] || []);
         nodes.update(allDatasetIds.map(id => ({{ id, hidden: !matchSet.has(id) }})));
@@ -581,7 +597,20 @@ const net = new vis.Network(
   }}
 );
 
-net.once("stabilizationIterationsDone", () => net.setOptions({{ physics: false }}));
+// ── Loading overlay ─────────────────────────────────────────────────────
+
+net.on("stabilizationProgress", (params) => {{
+  const pct = Math.round(params.iterations / params.total * 100);
+  document.querySelector(".loading-text").textContent = `Stabilisation… ${{pct}}%`;
+}});
+
+net.once("stabilizationIterationsDone", () => {{
+  net.setOptions({{ physics: false }});
+  const overlay = document.getElementById("loading-overlay");
+  overlay.style.transition = "opacity 0.4s";
+  overlay.style.opacity = "0";
+  setTimeout(() => overlay.remove(), 400);
+}});
 
 // ── État ───────────────────────────────────────────────────────────────
 
