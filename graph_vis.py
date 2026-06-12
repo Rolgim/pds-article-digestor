@@ -1,5 +1,4 @@
 """
-graph_viz.py
 Construit et visualise le graphe dataset → articles citants.
 
 Source :
@@ -369,6 +368,18 @@ def export_html(G: nx.DiGraph, output: str):
       color: #e0e2e9; font-size: 12px; width: 190px; outline: none;
     }}
     #search:focus {{ border-color: #5d9cec; }}
+    #search.has-results {{ border-color: #5d9cec; }}
+    #search.no-results  {{ border-color: #c1440e; }}
+
+    /* ── expand/collapse ── */
+    .tb-btn {{
+      align: right;
+      padding: 3px 10px; border-radius: 4px; font-size: 11px;
+      border: 1px solid #3a3f4a; background: #2a2d36;
+      color: #b0b8c3; cursor: pointer; transition: background 0.15s;
+      user-select: none;
+    }}
+    .tb-btn:hover {{ background: #333a4a; color: #e0e2e9; }}
 
     /* ── Legend ── */
     #legend {{
@@ -460,7 +471,7 @@ def export_html(G: nx.DiGraph, output: str):
 
 <div id="loading-overlay">
   <div class="spinner"></div>
-  <div class="loading-text">Chargement du graphe…</div>
+  <div class="loading-text">Computing graph…</div>
 </div>
 
 <div id="topbar">
@@ -471,7 +482,10 @@ def export_html(G: nx.DiGraph, output: str):
   <input id="search" type="text" placeholder="Search…">
 </div>
 
-<div id="legend"></div>
+<div id="legend">
+  <button class="tb-btn" id="btn-expand">Expand</button>
+  <button class="tb-btn" id="btn-collapse">Collapse</button>
+</div>
 
 <div id="main">
   <div id="graph-container"></div>
@@ -488,14 +502,19 @@ def export_html(G: nx.DiGraph, output: str):
 </div>
 
 <script>
-const LEGEND = {legend_json};
-const allNodes = {nodes_json};
-const allEdges = {edges_json};
+const LEGEND    = {legend_json};
+const allNodes  = {nodes_json};
+const allEdges  = {edges_json};
+const N_DATASETS_TOTAL = {n_datasets};
 
 // ── Index pré-calculés ──────────────────────────────────────────────────
 
 const nodesByBody = {{}};
 const allDatasetIds = [];
+const allArticleIds = [];
+// articleId -> [datasetId, ...]
+const parentsOf = {{}};
+
 
 allNodes.forEach(n => {{
   if (n.nodeGroup === "dataset") {{
@@ -503,13 +522,18 @@ allNodes.forEach(n => {{
     const b = (n.body || "others").toLowerCase();
     if (!nodesByBody[b]) nodesByBody[b] = [];
     nodesByBody[b].push(n.id);
+  }} else {{
+    allArticleIds.push(n.id);
   }}
 }});
 
+// dataset -> [article ids]  +  article -> [dataset ids]
 const childrenOf = {{}};
 allEdges.forEach(e => {{
   if (!childrenOf[e.from]) childrenOf[e.from] = [];
   childrenOf[e.from].push(e.to);
+  if (!parentsOf[e.to]) parentsOf[e.to] = [];
+  parentsOf[e.to].push(e.from);
 }});
 
 // ── Légende ────────────────────────────────────────────────────────────
@@ -546,6 +570,7 @@ LEGEND.forEach(item => {{
           l.style.opacity = "1";
           l.classList.remove("leg-active");
         }});
+        updateCounter(N_DATASETS_TOTAL);
       }} else {{
         activeFilter = body;
         const matchSet = new Set(nodesByBody[body] || []);
@@ -555,6 +580,7 @@ LEGEND.forEach(item => {{
           l.style.opacity = isActive ? "1" : "0.3";
           l.classList.toggle("leg-active", isActive);
         }});
+        updateCounter(matchSet.size);
       }}
     }});
   }}
@@ -616,6 +642,7 @@ net.once("stabilizationIterationsDone", () => {{
 
 let openDataset = null;
 let openArticle = null;
+let allExpanded = false;
 
 function showChildren(datasetId) {{
   const kids = childrenOf[datasetId] || [];
@@ -635,8 +662,8 @@ function hideChildren(datasetId) {{
   const kids = childrenOf[datasetId] || [];
   const nodeUpdates = [];
   kids.forEach(articleId => {{
-    const stillVisible = Object.entries(childrenOf).some(([dsId, children]) =>
-      dsId !== datasetId && dsId === openDataset && children.includes(articleId)
+    const stillVisible = (parentsOf[articleId] || []).some(
+      dsId => dsId !== datasetId && dsId === openDataset
     );
     if (!stillVisible) nodeUpdates.push({{ id: articleId, hidden: true }});
   }});
@@ -664,6 +691,24 @@ function hideArticleParents(articleId) {{
   }});
   if (edgeUpdates.length) edges.update(edgeUpdates);
 }}
+
+// ── Tout déplier / replier ──────────────────────────────────────────────
+
+document.getElementById("btn-expand").addEventListener("click", () => {{
+  openDataset = null;
+  openArticle = null;
+  nodes.update(allArticleIds.map(id => ({{ id, hidden: false }})));
+  edges.update(allEdges.map(e => ({{ id: e.id, hidden: false }})));
+  allExpanded = true;
+}});
+
+document.getElementById("btn-collapse").addEventListener("click", () => {{
+  openDataset = null;
+  openArticle = null;
+  nodes.update(allArticleIds.map(id => ({{ id, hidden: true }})));
+  edges.update(allEdges.map(e => ({{ id: e.id, hidden: true }})));
+  allExpanded = false;
+}});
 
 // ── Interactions ───────────────────────────────────────────────────────
 
@@ -698,17 +743,54 @@ net.on("click", (params) => {{
   }}
 }});
 
-document.getElementById("search").addEventListener("input", function() {{
+// ── Recherche (datasets + articles) ────────────────────────────────────
+
+document.getElementById("search").addEventListener("input", function () {{
   const q = this.value.toLowerCase().trim();
-  if (!q) {{ net.unselectAll(); return; }}
-  const match = allNodes.filter(n =>
+  const searchEl = this;
+
+  if (!q) {{
+    net.unselectAll();
+    searchEl.className = "";
+    return;
+  }}
+
+  // Cherche dans datasets
+  const dsMatch = allNodes.filter(n =>
     n.nodeGroup === "dataset" &&
     (n.label.toLowerCase().includes(q) || n.id.toLowerCase().includes(q))
   );
-  if (match.length) {{
-    net.selectNodes(match.map(n => n.id));
-    net.focus(match[0].id, {{ scale: 1.3, animation: true }});
+
+  // Cherche dans articles
+  const artMatch = allNodes.filter(n =>
+    n.nodeGroup === "article" &&
+    n.label.toLowerCase().includes(q)
+  );
+
+  const totalMatch = [...dsMatch, ...artMatch];
+
+  if (!totalMatch.length) {{
+    net.unselectAll();
+    searchEl.className = "no-results";
+    return;
   }}
+
+  searchEl.className = "has-results";
+
+  // Révèle les articles matchés + leurs parents datasets
+  if (artMatch.length) {{
+    const articleIdsToShow = artMatch.map(n => n.id).filter(id => nodes.get(id).hidden);
+    if (articleIdsToShow.length) nodes.update(articleIdsToShow.map(id => ({{ id, hidden: false }})));
+
+    // Révèle les arêtes vers ces articles
+    const edgeUpdates = [];
+    edges.forEach(e => {{
+      if (artMatch.some(n => n.id === e.to)) edgeUpdates.push({{ id: e.id, hidden: false }});
+    }});
+    if (edgeUpdates.length) edges.update(edgeUpdates);
+  }}
+
+  net.selectNodes(totalMatch.map(n => n.id));
 }});
 </script>
 </body>
