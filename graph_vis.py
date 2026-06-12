@@ -512,9 +512,7 @@ const N_DATASETS_TOTAL = {n_datasets};
 const nodesByBody = {{}};
 const allDatasetIds = [];
 const allArticleIds = [];
-// articleId -> [datasetId, ...]
 const parentsOf = {{}};
-
 
 allNodes.forEach(n => {{
   if (n.nodeGroup === "dataset") {{
@@ -527,7 +525,6 @@ allNodes.forEach(n => {{
   }}
 }});
 
-// dataset -> [article ids]  +  article -> [dataset ids]
 const childrenOf = {{}};
 allEdges.forEach(e => {{
   if (!childrenOf[e.from]) childrenOf[e.from] = [];
@@ -536,7 +533,64 @@ allEdges.forEach(e => {{
   parentsOf[e.to].push(e.from);
 }});
 
-// ── Légende ────────────────────────────────────────────────────────────
+// ── Fonctions utilitaires ───────────────────────────────────────────────
+
+function isDatasetVisible(datasetId) {{
+  if (!activeFilter) return true;
+  const node = nodes.get(datasetId);
+  if (!node) return false;
+  return node.body === activeFilter;
+}}
+
+function updateEdgesVisibility() {{
+  const visibleNodes = new Set(
+    allNodes
+      .filter(n => !nodes.get(n.id).hidden)
+      .map(n => n.id)
+  );
+  const edgeUpdates = allEdges.map(e => {{
+    const fromVisible = visibleNodes.has(e.from);
+    const toVisible = visibleNodes.has(e.to);
+    return {{ id: e.id, hidden: !(fromVisible && toVisible) }};
+  }});
+  edges.update(edgeUpdates);
+}}
+
+function showChildren(datasetId) {{
+  if (!isDatasetVisible(datasetId)) return;
+  const kids = childrenOf[datasetId] || [];
+  const nodeUpdates = kids
+    .filter(id => nodes.get(id) && nodes.get(id).hidden)
+    .map(id => ({{ id, hidden: false }}));
+  if (nodeUpdates.length) nodes.update(nodeUpdates);
+  updateEdgesVisibility();
+}}
+
+function hideChildren(datasetId) {{
+  const kids = childrenOf[datasetId] || [];
+  const nodeUpdates = kids
+    .filter(id => nodes.get(id) && !nodes.get(id).hidden)
+    .map(id => ({{ id, hidden: true }}));
+  if (nodeUpdates.length) nodes.update(nodeUpdates);
+  updateEdgesVisibility();
+}}
+
+function showArticleParents(articleId) {{
+  const parents = parentsOf[articleId] || [];
+  const edgeUpdates = allEdges
+    .filter(e => e.to === articleId && parents.includes(e.from) && isDatasetVisible(e.from))
+    .map(e => ({{ id: e.id, hidden: false }}));
+  if (edgeUpdates.length) edges.update(edgeUpdates);
+}}
+
+function hideArticleParents(articleId) {{
+  const edgeUpdates = allEdges
+    .filter(e => e.to === articleId)
+    .map(e => ({{ id: e.id, hidden: true }}));
+  if (edgeUpdates.length) edges.update(edgeUpdates);
+}}
+
+// ── Légende ─────────────────────────────────────────────────────────────
 
 const legendEl = document.getElementById("legend");
 let activeFilter = null;
@@ -566,6 +620,17 @@ LEGEND.forEach(item => {{
       if (activeFilter === body) {{
         activeFilter = null;
         nodes.update(allDatasetIds.map(id => ({{ id, hidden: false }})));
+        if (allExpanded) {{
+          const articlesToShow = [];
+          allDatasetIds.forEach(dsId => {{
+            const kids = childrenOf[dsId] || [];
+            articlesToShow.push(...kids);
+          }});
+          nodes.update(allArticleIds.map(id => ({{ id, hidden: !articlesToShow.includes(id) }})));
+        }} else {{
+          nodes.update(allArticleIds.map(id => ({{ id, hidden: true }})));
+        }}
+        updateEdgesVisibility();
         legendEl.querySelectorAll(".leg").forEach(l => {{
           l.style.opacity = "1";
           l.classList.remove("leg-active");
@@ -575,6 +640,16 @@ LEGEND.forEach(item => {{
         activeFilter = body;
         const matchSet = new Set(nodesByBody[body] || []);
         nodes.update(allDatasetIds.map(id => ({{ id, hidden: !matchSet.has(id) }})));
+        if (!allExpanded) {{
+          nodes.update(allArticleIds.map(id => ({{ id, hidden: true }})));
+        }} else {{
+          const articlesToShow = [];
+          matchSet.forEach(dsId => {{
+            const kids = childrenOf[dsId] || [];
+            articlesToShow.push(...kids);
+          }});
+          nodes.update(allArticleIds.map(id => ({{ id, hidden: !articlesToShow.includes(id) }})));
+        }}
         legendEl.querySelectorAll(".leg").forEach(l => {{
           const isActive = l.dataset.body === body;
           l.style.opacity = isActive ? "1" : "0.3";
@@ -582,6 +657,7 @@ LEGEND.forEach(item => {{
         }});
         updateCounter(matchSet.size);
       }}
+      updateEdgesVisibility();
     }});
   }}
 
@@ -644,61 +720,24 @@ let openDataset = null;
 let openArticle = null;
 let allExpanded = false;
 
-function showChildren(datasetId) {{
-  const kids = childrenOf[datasetId] || [];
-  const nodeUpdates = kids
-    .filter(id => nodes.get(id) && nodes.get(id).hidden)
-    .map(id => ({{ id, hidden: false }}));
-  if (nodeUpdates.length) nodes.update(nodeUpdates);
-
-  const edgeUpdates = [];
-  edges.forEach(e => {{
-    if (e.from === datasetId) edgeUpdates.push({{ id: e.id, hidden: false }});
-  }});
-  if (edgeUpdates.length) edges.update(edgeUpdates);
-}}
-
-function hideChildren(datasetId) {{
-  const kids = childrenOf[datasetId] || [];
-  const nodeUpdates = [];
-  kids.forEach(articleId => {{
-    const stillVisible = (parentsOf[articleId] || []).some(
-      dsId => dsId !== datasetId && dsId === openDataset
-    );
-    if (!stillVisible) nodeUpdates.push({{ id: articleId, hidden: true }});
-  }});
-  if (nodeUpdates.length) nodes.update(nodeUpdates);
-
-  const edgeUpdates = [];
-  edges.forEach(e => {{
-    if (e.from === datasetId) edgeUpdates.push({{ id: e.id, hidden: true }});
-  }});
-  if (edgeUpdates.length) edges.update(edgeUpdates);
-}}
-
-function showArticleParents(articleId) {{
-  const edgeUpdates = [];
-  edges.forEach(e => {{
-    if (e.to === articleId) edgeUpdates.push({{ id: e.id, hidden: false }});
-  }});
-  if (edgeUpdates.length) edges.update(edgeUpdates);
-}}
-
-function hideArticleParents(articleId) {{
-  const edgeUpdates = [];
-  edges.forEach(e => {{
-    if (e.to === articleId) edgeUpdates.push({{ id: e.id, hidden: true }});
-  }});
-  if (edgeUpdates.length) edges.update(edgeUpdates);
-}}
-
-// ── Tout déplier / replier ──────────────────────────────────────────────
+// ── Boutons Expand/Collapse ─────────────────────────────────────────────
 
 document.getElementById("btn-expand").addEventListener("click", () => {{
   openDataset = null;
   openArticle = null;
-  nodes.update(allArticleIds.map(id => ({{ id, hidden: false }})));
-  edges.update(allEdges.map(e => ({{ id: e.id, hidden: false }})));
+
+  const visibleDatasets = allNodes
+    .filter(n => n.nodeGroup === "dataset" && isDatasetVisible(n.id))
+    .map(n => n.id);
+
+  const articlesToShow = [];
+  visibleDatasets.forEach(dsId => {{
+    const kids = childrenOf[dsId] || [];
+    articlesToShow.push(...kids);
+  }});
+
+  nodes.update(allArticleIds.map(id => ({{ id, hidden: !articlesToShow.includes(id) }})));
+  updateEdgesVisibility();
   allExpanded = true;
 }});
 
@@ -715,7 +754,7 @@ document.getElementById("btn-collapse").addEventListener("click", () => {{
 net.on("click", (params) => {{
   if (!params.nodes.length) return;
   const nodeId = params.nodes[0];
-  const node   = nodes.get(nodeId);
+  const node = nodes.get(nodeId);
 
   document.getElementById("panel-placeholder").style.display = "none";
   const content = document.getElementById("panel-content");
@@ -743,7 +782,7 @@ net.on("click", (params) => {{
   }}
 }});
 
-// ── Recherche (datasets + articles) ────────────────────────────────────
+// ── Recherche ───────────────────────────────────────────────────────────
 
 document.getElementById("search").addEventListener("input", function () {{
   const q = this.value.toLowerCase().trim();
@@ -755,13 +794,11 @@ document.getElementById("search").addEventListener("input", function () {{
     return;
   }}
 
-  // Cherche dans datasets
   const dsMatch = allNodes.filter(n =>
     n.nodeGroup === "dataset" &&
     (n.label.toLowerCase().includes(q) || n.id.toLowerCase().includes(q))
   );
 
-  // Cherche dans articles
   const artMatch = allNodes.filter(n =>
     n.nodeGroup === "article" &&
     n.label.toLowerCase().includes(q)
@@ -777,12 +814,10 @@ document.getElementById("search").addEventListener("input", function () {{
 
   searchEl.className = "has-results";
 
-  // Révèle les articles matchés + leurs parents datasets
   if (artMatch.length) {{
     const articleIdsToShow = artMatch.map(n => n.id).filter(id => nodes.get(id).hidden);
     if (articleIdsToShow.length) nodes.update(articleIdsToShow.map(id => ({{ id, hidden: false }})));
 
-    // Révèle les arêtes vers ces articles
     const edgeUpdates = [];
     edges.forEach(e => {{
       if (artMatch.some(n => n.id === e.to)) edgeUpdates.push({{ id: e.id, hidden: false }});
