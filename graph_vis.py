@@ -47,12 +47,7 @@ _BODY_KEYWORDS = {
 }
 
 def _find_body_in_meta(meta: dict, cid: str = "") -> list[str]:
-    """
-    Priorité 1 : préfixe/segment du collection ID
-    Priorité 2 : champs textuels PDS4 + PDS3
-    """
     cid_lower = cid.lower()
-
     for body in _BODY_KEYWORDS:
         if cid_lower.startswith(body + "-") or f"-{body}-" in cid_lower:
             return [body]
@@ -292,7 +287,7 @@ def export_html(G: nx.DiGraph, output: str):
                 },
                 "size":      attr.get("size", 18),
                 "nodeGroup": "dataset",
-                "body":      attr.get("body", "others"),   # ← pour le filtre JS
+                "body":      attr.get("body", "others").lower(),
                 "hidden":    False,
                 "panelHtml": attr.get("panelHtml", ""),
             })
@@ -374,10 +369,7 @@ def export_html(G: nx.DiGraph, output: str):
     .leg:last-child {{ cursor: default; }}
     .leg:not(:last-child):hover {{ background: #2a2d36; }}
     .leg-dot {{ width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }}
-    .leg-active {{
-      outline: 1px solid #fff4;
-      background: #2a2d36;
-    }}
+    .leg-active {{ outline: 1px solid #fff4; background: #2a2d36; }}
 
     /* ── Layout ── */
     #main {{ display: flex; height: calc(100% - 76px); }}
@@ -475,8 +467,35 @@ def export_html(G: nx.DiGraph, output: str):
 
 <script>
 const LEGEND = {legend_json};
-const legendEl = document.getElementById("legend");
+const allNodes = {nodes_json};
+const allEdges = {edges_json};
 
+// ── Index pré-calculés ──────────────────────────────────────────────────
+
+// body -> [dataset ids]
+const nodesByBody = {{}};
+// tous les ids dataset
+const allDatasetIds = [];
+
+allNodes.forEach(n => {{
+  if (n.nodeGroup === "dataset") {{
+    allDatasetIds.push(n.id);
+    const b = (n.body || "others").toLowerCase();
+    if (!nodesByBody[b]) nodesByBody[b] = [];
+    nodesByBody[b].push(n.id);
+  }}
+}});
+
+// dataset -> [article ids]  (depuis les arêtes)
+const childrenOf = {{}};
+allEdges.forEach(e => {{
+  if (!childrenOf[e.from]) childrenOf[e.from] = [];
+  childrenOf[e.from].push(e.to);
+}});
+
+// ── Légende ────────────────────────────────────────────────────────────
+
+const legendEl = document.getElementById("legend");
 let activeFilter = null;
 
 LEGEND.forEach(item => {{
@@ -494,43 +513,31 @@ LEGEND.forEach(item => {{
   div.appendChild(dot);
   div.appendChild(lbl);
 
-  // Filtre cliquable pour tous sauf "Citation"
   if (item.label !== "Citation") {{
     div.addEventListener("click", () => {{
       const body = div.dataset.body;
 
+      // Ferme tout ce qui est ouvert
+      if (openDataset) {{ hideChildren(openDataset); openDataset = null; }}
+      if (openArticle) {{ hideArticleParents(openArticle); openArticle = null; }}
+
       if (activeFilter === body) {{
-        // Désactive le filtre : tout afficher
+        // Désactive : tout afficher en batch
         activeFilter = null;
-        nodes.forEach(n => {{
-          if (n.nodeGroup === "dataset") nodes.update({{ id: n.id, hidden: false }});
-        }});
+        nodes.update(allDatasetIds.map(id => ({{ id, hidden: false }})));
         legendEl.querySelectorAll(".leg").forEach(l => {{
           l.style.opacity = "1";
           l.classList.remove("leg-active");
         }});
       }} else {{
-        // Ferme dataset/article ouverts
-        if (openDataset) {{ hideChildren(openDataset); openDataset = null; }}
-        if (openArticle) {{ hideArticleParents(openArticle); openArticle = null; }}
-
+        // Active : batch update depuis l'index
         activeFilter = body;
-
-        nodes.forEach(n => {{
-          if (n.nodeGroup === "dataset") {{
-            const match = n.body && n.body.toLowerCase() === body;
-            nodes.update({{ id: n.id, hidden: !match }});
-          }}
-        }});
-
+        const matchSet = new Set(nodesByBody[body] || []);
+        nodes.update(allDatasetIds.map(id => ({{ id, hidden: !matchSet.has(id) }})));
         legendEl.querySelectorAll(".leg").forEach(l => {{
-          if (l.dataset.body === body) {{
-            l.style.opacity = "1";
-            l.classList.add("leg-active");
-          }} else {{
-            l.style.opacity = "0.3";
-            l.classList.remove("leg-active");
-          }}
+          const isActive = l.dataset.body === body;
+          l.style.opacity = isActive ? "1" : "0.3";
+          l.classList.toggle("leg-active", isActive);
         }});
       }}
     }});
@@ -539,15 +546,7 @@ LEGEND.forEach(item => {{
   legendEl.appendChild(div);
 }});
 
-const allNodes = {nodes_json};
-const allEdges = {edges_json};
-
-// Index dataset -> [article node ids] construit depuis les arêtes
-const childrenOf = {{}};
-allEdges.forEach(e => {{
-  if (!childrenOf[e.from]) childrenOf[e.from] = [];
-  childrenOf[e.from].push(e.to);
-}});
+// ── vis.js ─────────────────────────────────────────────────────────────
 
 const nodes = new vis.DataSet(allNodes);
 const edges = new vis.DataSet(allEdges);
@@ -583,6 +582,8 @@ const net = new vis.Network(
 );
 
 net.once("stabilizationIterationsDone", () => net.setOptions({{ physics: false }}));
+
+// ── État ───────────────────────────────────────────────────────────────
 
 let openDataset = null;
 let openArticle = null;
@@ -634,6 +635,8 @@ function hideArticleParents(articleId) {{
   }});
   if (edgeUpdates.length) edges.update(edgeUpdates);
 }}
+
+// ── Interactions ───────────────────────────────────────────────────────
 
 net.on("click", (params) => {{
   if (!params.nodes.length) return;
