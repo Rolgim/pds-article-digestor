@@ -1,6 +1,8 @@
 
 ## A tool to visualize articles based on NASA Planetary Data System (PDS)
 
+### Workflow
+
 ```
 dois_scraper.py                 →  doi_by_collection.json  {"cid": "10.XXX/YYY"}
        ↓
@@ -10,6 +12,8 @@ downstream_science_paper.py     →  citing_articles.json    {"cid": {"doi": "..
        ↓
 graph_vis.py                    →  docs/index.html
 ```
+
+### Codes
 
 - dois_scraper: uses ODE STAC API to get the proper PDS page and scrap there the DOI of ODE datasets
 
