@@ -4,10 +4,8 @@ from bs4 import BeautifulSoup
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-# Définition des chemins de vos fichiers en variables globales
-FICHIER_ENTREE = "doi_by_collection.json"
-FICHIER_SORTIE = "datasets_enriched.json"
-# Nombre maximum de requêtes simultanées
+FICHIER_ENTREE = "../docs/doi_by_collection.json"
+FICHIER_SORTIE = "../docs/datasets_enriched.json"
 MAX_THREADS = 5 
 
 def scrape_all_pds_metadata(doi_suffix):
@@ -101,7 +99,7 @@ def main():
     with open(FICHIER_SORTIE, 'w', encoding='utf-8') as f:
         json.dump(new_json_output, f, indent=2, ensure_ascii=False)
         
-    print(f"\n[✓] Terminé ! Le nouveau JSON épuré a été sauvegardé sous : '{FICHIER_SORTIE}'")
+    print(f"\n[OK] Terminé. Le nouveau JSON épuré a été sauvegardé sous : '{FICHIER_SORTIE}'")
 
 if __name__ == "__main__":
     main()

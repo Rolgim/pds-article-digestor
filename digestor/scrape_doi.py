@@ -1,39 +1,31 @@
 """
-stac_doi_scraper.py
-
 Récupère les DOI des collections STAC via deux sources :
   1. ODE (ode.rsl.wustl.edu) — productDetail.aspx + UpdatePanel postback
   2. Fallback : https://pds-geosciences.wustl.edu/dataserv/doi.htm
      via le champ pds:dataset_id de chaque collection
 
 Usage :
-    python stac_doi_scraper.py
-    python stac_doi_scraper.py --refresh
-    python stac_doi_scraper.py --verbose
+    python scrap_doi.py
+    python scrap_doi.py --refresh
+    python scrap_doi.py --verbose
 """
-
+from dataclasses import dataclass
 import argparse
 import asyncio
 import json
 import re
 from pathlib import Path
 from urllib.parse import urlparse
-
+from typing import List
 import httpx
 from bs4 import BeautifulSoup
-
-from stac_rag_ingest import (
-    STAC_BASE,
-    StacCollection,
-    load_collections,
-    save_collections,
-)
 
 ##############################################################################
 # CONFIG
 ##############################################################################
-
-DOI_FILE = Path("doi_by_collection.json")
+STAC_BASE = "https://odestac.stacplanet.pdssp.eu"
+COLLECTIONS_FILE = Path("../docs/stac_collections.json")
+DOI_FILE = Path("../docs/doi_by_collection.json")
 PDS_DOI_PAGE = "https://pds-geosciences.wustl.edu/dataserv/doi.htm"
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -62,6 +54,25 @@ def save_doi_cache(doi_map: dict):
 ##############################################################################
 # COLLECTIONS
 ##############################################################################
+
+@dataclass
+class StacCollection:
+    id: str
+    description: str
+    extent: dict
+
+def save_collections(collections: List[StacCollection]):
+    COLLECTIONS_FILE.write_text(
+        json.dumps([c.__dict__ for c in collections], indent=2),
+        encoding="utf-8"
+    )
+    print(f"Collections sauvegardées dans {COLLECTIONS_FILE}")
+
+def load_collections() -> List[StacCollection] | None:
+    if not COLLECTIONS_FILE.exists():
+        return None
+    data = json.loads(COLLECTIONS_FILE.read_text(encoding="utf-8"))
+    return [StacCollection(**c) for c in data]
 
 async def _fetch_collections(force_refresh=False) -> list[StacCollection]:
     if not force_refresh:

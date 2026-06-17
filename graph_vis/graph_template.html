@@ -1,0 +1,483 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Planetary Datasets & Citations</title>
+  <script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body {
+      height: 100%; font-family: 'Inter', system-ui, sans-serif;
+      overflow: hidden; background: #1a1d26; color: #e0e2e9;
+    }
+
+    /* Loading overlay */
+    #loading-overlay {
+      position: fixed; inset: 0; z-index: 100;
+      background: #1a1d26;
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      gap: 16px;
+    }
+    .spinner {
+      width: 36px; height: 36px; border-radius: 50%;
+      border: 3px solid #2a2d36;
+      border-top-color: #5d9cec;
+      animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .loading-text { color: #8a94a6; font-size: 12px; letter-spacing: .03em; }
+
+    /* Topbar */
+    #topbar {
+      display: flex; align-items: center; gap: 18px;
+      height: 44px; padding: 0 18px;
+      background: #222831; border-bottom: 1px solid #333;
+      font-size: 12px; color: #b0b8c3; flex-shrink: 0;
+    }
+    #topbar h1 {
+      font-size: 13px; font-weight: 600; color: #f0f2f5;
+      letter-spacing: .03em; margin-right: 4px;
+    }
+    .stat b { color: #f0f2f5; }
+    #counter { font-size: 11px; color: #5d9cec; display: none; }
+    #search {
+      margin-left: auto;
+      padding: 5px 11px; border-radius: 5px;
+      border: 1px solid #3a3f4a; background: #2a2d36;
+      color: #e0e2e9; font-size: 12px; width: 210px; outline: none;
+    }
+    #search:focus       { border-color: #5d9cec; }
+    #search.has-results { border-color: #5d9cec; }
+    #search.no-results  { border-color: #c1440e; }
+
+    /* Legend + toolbar */
+    #legend {
+      display: flex; gap: 14px; align-items: center;
+      padding: 0 18px; height: 32px;
+      background: #222831; border-bottom: 1px solid #333;
+      font-size: 11px; color: #b0b8c3; flex-shrink: 0;
+    }
+    .leg {
+      display: flex; align-items: center; gap: 5px;
+      cursor: pointer; border-radius: 4px;
+      padding: 2px 6px; transition: opacity 0.2s;
+      user-select: none;
+    }
+    .leg:last-child         { cursor: default; }
+    .leg:not(:last-child):hover { background: #2a2d36; }
+    .leg-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+    .leg-active { outline: 1px solid #fff4; background: #2a2d36; }
+
+    .tb-btn {
+      padding: 3px 10px; border-radius: 4px; font-size: 11px;
+      border: 1px solid #3a3f4a; background: #2a2d36;
+      color: #b0b8c3; cursor: pointer; transition: background 0.15s;
+      user-select: none;
+    }
+    .tb-btn:hover { background: #333a4a; color: #e0e2e9; }
+
+    /* Layout */
+    #main { display: flex; height: calc(100% - 76px); }
+    #graph-container { flex: 1; height: 100%; }
+
+    /* Panel */
+    #panel {
+      width: 320px; min-width: 280px; height: 100%;
+      overflow-y: auto; background: #222831;
+      border-left: 1px solid #333; padding: 22px 18px;
+      font-size: 12px; line-height: 1.6;
+    }
+    #panel-placeholder {
+      color: #8a94a6; font-size: 12px;
+      margin-top: 60px; text-align: center; line-height: 2;
+    }
+    #panel-placeholder svg {
+      opacity: .4; margin-bottom: 10px;
+      display: block; margin-inline: auto;
+    }
+
+    /* Panel components */
+    .ph-type {
+      font-size: 9px; font-weight: 700; letter-spacing: .12em;
+      padding: 2px 7px; border-radius: 3px; display: inline-block;
+      margin-bottom: 8px;
+    }
+    .ph-type.dataset { background: #E74C3C; color: #f0f2f5; }
+    .ph-type.article { background: #2E86C1; color: #f0f2f5; }
+    .ph-title {
+      font-size: 14px; font-weight: 600; color: #f0f2f5;
+      margin-bottom: 8px; line-height: 1.4;
+    }
+    .ph-meta  { color: #8a94a6; font-size: 11px; margin-bottom: 12px; }
+    .ph-body  {
+      display: flex; align-items: center; gap: 6px;
+      font-size: 11px; color: #b0b8c3; margin-bottom: 14px;
+    }
+    .ph-dot   { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
+    .ph-section {
+      margin-bottom: 14px; border-top: 1px solid #3a3f4a; padding-top: 12px;
+    }
+    .ph-row   { display: flex; gap: 8px; margin-bottom: 6px; align-items: baseline; }
+    .ph-key   {
+      color: #8a94a6; font-size: 10px; text-transform: uppercase;
+      letter-spacing: .06em; min-width: 80px; flex-shrink: 0;
+    }
+    .ph-val   { color: #e0e2e9; font-size: 12px; }
+    .ph-val a { color: #5d9cec; text-decoration: none; }
+    .ph-val a:hover { text-decoration: underline; }
+    .ph-desc  {
+      font-size: 11px; color: #8a94a6; line-height: 1.7;
+      margin-bottom: 14px; border-top: 1px solid #3a3f4a; padding-top: 12px;
+    }
+    .ph-table {
+      width: 100%; border-collapse: collapse;
+      margin-bottom: 14px; border-top: 1px solid #3a3f4a;
+    }
+    .ph-table td { padding: 3px 0; font-size: 11px; vertical-align: top; }
+    .pk {
+      color: #8a94a6; text-transform: uppercase; font-size: 10px;
+      letter-spacing: .05em; min-width: 110px; padding-right: 8px;
+    }
+    .ph-abstract {
+      font-size: 11px; color: #a0a8b3; line-height: 1.7;
+      border-top: 1px solid #3a3f4a; padding-top: 12px; margin-top: 4px;
+    }
+  </style>
+</head>
+<body>
+
+<div id="loading-overlay">
+  <div class="spinner"></div>
+  <div class="loading-text">Computing graph…</div>
+</div>
+
+<div id="topbar">
+  <h1>Planetary Datasets &amp; Citations</h1>
+  <span class="stat"><b>%%N_DATASETS%%</b> datasets</span>
+  <span class="stat"><b>%%N_ARTICLES%%</b> citations</span>
+  <span class="stat"><b>%%N_EDGES%%</b> relationships</span>
+  <span id="counter"></span>
+  <input id="search" type="text" placeholder="Search datasets and articles…">
+</div>
+
+<div id="legend">
+  <button class="tb-btn" id="btn-expand">Expand all</button>
+  <button class="tb-btn" id="btn-collapse">Collapse all</button>
+</div>
+
+<div id="main">
+  <div id="graph-container"></div>
+  <div id="panel">
+    <div id="panel-placeholder">
+      <svg width="32" height="32" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <!-- Anneau (ellipse inclinée) -->
+        <ellipse cx="12" cy="12" rx="10" ry="3.5" transform="rotate(-20 12 12)"
+                 stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+        <!-- Planète -->
+        <circle cx="12" cy="12" r="6.5" fill="currentColor" stroke="none" />
+      </svg>
+      Click on a dataset<br>to explore its citations
+    </div>
+    <div id="panel-content" style="display:none"></div>
+  </div>
+</div>
+
+<script>
+const LEGEND         = %%LEGEND_JSON%%;
+const allNodes       = %%NODES_JSON%%;
+const allEdges       = %%EDGES_JSON%%;
+const N_DATASETS_TOTAL = %%N_DATASETS_TOTAL%%;
+
+// State
+const state = {
+  openDataset: null,
+  openArticle: null,
+  expanded:    false,
+  filter:      null,
+};
+
+// Pre-computed indexes - performance
+const nodesByBody   = {};
+const allDatasetIds = [];
+const allArticleIds = [];
+const childrenOf    = {};  // datasetId  -> [articleId, ...]
+const parentsOf     = {};  // articleId  -> [datasetId, ...]
+
+allNodes.forEach(n => {
+  if (n.nodeGroup === "dataset") {
+    allDatasetIds.push(n.id);
+    const b = (n.body || "others").toLowerCase();
+    if (!nodesByBody[b]) nodesByBody[b] = [];
+    nodesByBody[b].push(n.id);
+  } else {
+    allArticleIds.push(n.id);
+  }
+});
+
+allEdges.forEach(e => {
+  if (!childrenOf[e.from]) childrenOf[e.from] = [];
+  childrenOf[e.from].push(e.to);
+  if (!parentsOf[e.to]) parentsOf[e.to] = [];
+  parentsOf[e.to].push(e.from);
+});
+
+// Counter
+const counterEl = document.getElementById("counter");
+
+function updateCounter(visible) {
+  if (visible === N_DATASETS_TOTAL) {
+    counterEl.style.display = "none";
+  } else {
+    counterEl.style.display = "inline";
+    counterEl.textContent = `${visible} / ${N_DATASETS_TOTAL} datasets`;
+  }
+}
+
+// vis.js datasets
+const nodes = new vis.DataSet(allNodes);
+const edges = new vis.DataSet(allEdges);
+
+const net = new vis.Network(
+  document.getElementById("graph-container"),
+  { nodes, edges },
+  {
+    physics: {
+      solver: "forceAtlas2Based",
+      forceAtlas2Based: {
+        gravitationalConstant: -100,
+        centralGravity:        0.01,
+        springLength:          140,
+        springConstant:        0.05,
+        damping:               0.4,
+      },
+      stabilization: { iterations: 400 },
+    },
+    edges: {
+      arrows: { to: { enabled: true, scaleFactor: 0.35 } },
+      color:  { color: "#5a6a8a", opacity: 0.9 },
+      smooth: { type: "continuous" },
+      width:  1.2,
+    },
+    nodes: {
+      shape: "dot",
+      font:  { size: 12, color: "#e0e2e9" },
+      borderWidth: 2,
+    },
+    interaction: { hover: true, tooltipDelay: 150 },
+  }
+);
+
+// Loading overlay
+net.on("stabilizationProgress", ({ iterations, total }) => {
+  const pct = Math.round(iterations / total * 100);
+  document.querySelector(".loading-text").textContent = `Computing graph… ${pct}%`;
+});
+
+net.once("stabilizationIterationsDone", () => {
+  net.setOptions({ physics: false });
+  const overlay = document.getElementById("loading-overlay");
+  overlay.style.transition = "opacity 0.4s";
+  overlay.style.opacity    = "0";
+  setTimeout(() => overlay.remove(), 400);
+});
+
+// Visibility helpers
+function isDatasetVisible(datasetId) {
+  if (!state.filter) return true;
+  const n = nodes.get(datasetId);
+  return n && n.body === state.filter;
+}
+
+function updateEdgesVisibility() {
+  const visible = new Set(
+    allNodes.filter(n => !nodes.get(n.id).hidden).map(n => n.id)
+  );
+  edges.update(allEdges.map(e => ({
+    id:     e.id,
+    hidden: !(visible.has(e.from) && visible.has(e.to)),
+  })));
+}
+
+function showChildren(datasetId) {
+  if (!isDatasetVisible(datasetId)) return;
+  const updates = (childrenOf[datasetId] || [])
+    .filter(id => nodes.get(id)?.hidden)
+    .map(id => ({ id, hidden: false }));
+  if (updates.length) nodes.update(updates);
+  updateEdgesVisibility();
+}
+
+function hideChildren(datasetId) {
+  const updates = (childrenOf[datasetId] || [])
+    .filter(id => !nodes.get(id)?.hidden)
+    .map(id => ({ id, hidden: true }));
+  if (updates.length) nodes.update(updates);
+  updateEdgesVisibility();
+}
+
+function showArticleParents(articleId) {
+  const edgeUpdates = allEdges
+    .filter(e => e.to === articleId && isDatasetVisible(e.from))
+    .map(e => ({ id: e.id, hidden: false }));
+  if (edgeUpdates.length) edges.update(edgeUpdates);
+}
+
+function hideArticleParents(articleId) {
+  const edgeUpdates = allEdges
+    .filter(e => e.to === articleId)
+    .map(e => ({ id: e.id, hidden: true }));
+  if (edgeUpdates.length) edges.update(edgeUpdates);
+}
+
+// Legend
+const legendEl = document.getElementById("legend");
+
+LEGEND.forEach(item => {
+  const div = document.createElement("div");
+  div.className    = "leg";
+  div.dataset.body = item.label.toLowerCase();
+
+  const dot = document.createElement("div");
+  dot.className    = "leg-dot";
+  dot.style.background = item.color;
+  if (item.label === "Citation") dot.style.border = "1px solid #2a5a9a";
+
+  const lbl = document.createElement("span");
+  lbl.textContent = item.label;
+  div.appendChild(dot);
+  div.appendChild(lbl);
+
+  if (item.label !== "Citation") {
+    div.addEventListener("click", () => onLegendClick(div.dataset.body));
+  }
+  legendEl.appendChild(div);
+});
+
+function onLegendClick(body) {
+  // Close any open dataset/article
+  if (state.openDataset) { hideChildren(state.openDataset);       state.openDataset = null; }
+  if (state.openArticle) { hideArticleParents(state.openArticle); state.openArticle = null; }
+
+  const deactivating = state.filter === body;
+  state.filter = deactivating ? null : body;
+
+  // Update dataset visibility
+  const matchSet = new Set(state.filter ? (nodesByBody[state.filter] || []) : allDatasetIds);
+  nodes.update(allDatasetIds.map(id => ({ id, hidden: !matchSet.has(id) })));
+
+  // Respect expanded state for articles
+  if (state.expanded) {
+    const articlesToShow = new Set();
+    matchSet.forEach(dsId => (childrenOf[dsId] || []).forEach(a => articlesToShow.add(a)));
+    nodes.update(allArticleIds.map(id => ({ id, hidden: !articlesToShow.has(id) })));
+  } else {
+    nodes.update(allArticleIds.map(id => ({ id, hidden: true })));
+  }
+
+  updateEdgesVisibility();
+  updateCounter(deactivating ? N_DATASETS_TOTAL : matchSet.size);
+
+  // Update legend styles
+  legendEl.querySelectorAll(".leg").forEach(l => {
+    const active = !deactivating && l.dataset.body === body;
+    l.style.opacity = (!state.filter || active) ? "1" : "0.3";
+    l.classList.toggle("leg-active", active);
+  });
+}
+
+// Expand / Collapse
+document.getElementById("btn-expand").addEventListener("click", () => {
+  state.openDataset = null;
+  state.openArticle = null;
+  state.expanded    = true;
+
+  const visibleDs = allDatasetIds.filter(id => isDatasetVisible(id));
+  const toShow    = new Set(visibleDs.flatMap(id => childrenOf[id] || []));
+  nodes.update(allArticleIds.map(id => ({ id, hidden: !toShow.has(id) })));
+  updateEdgesVisibility();
+});
+
+document.getElementById("btn-collapse").addEventListener("click", () => {
+  state.openDataset = null;
+  state.openArticle = null;
+  state.expanded    = false;
+
+  nodes.update(allArticleIds.map(id => ({ id, hidden: true })));
+  edges.update(allEdges.map(e  => ({ id: e.id, hidden: true })));
+});
+
+// Click interactions
+net.on("click", ({ nodes: clicked }) => {
+  if (!clicked.length) return;
+  const nodeId = clicked[0];
+  const node   = nodes.get(nodeId);
+
+  document.getElementById("panel-placeholder").style.display = "none";
+  const content = document.getElementById("panel-content");
+  content.style.display = "block";
+  content.innerHTML     = node.panelHtml;
+
+  if (node.nodeGroup === "dataset") {
+    if (state.openDataset === nodeId) {
+      hideChildren(nodeId);
+      state.openDataset = null;
+    } else {
+      if (state.openDataset) hideChildren(state.openDataset);
+      showChildren(nodeId);
+      state.openDataset = nodeId;
+    }
+
+  } else if (node.nodeGroup === "article") {
+    if (state.openArticle === nodeId) {
+      hideArticleParents(nodeId);
+      state.openArticle = null;
+    } else {
+      if (state.openArticle) hideArticleParents(state.openArticle);
+      showArticleParents(nodeId);
+      state.openArticle = nodeId;
+    }
+  }
+});
+
+// Search
+document.getElementById("search").addEventListener("input", function () {
+  const q = this.value.toLowerCase().trim();
+
+  if (!q) {
+    net.unselectAll();
+    this.className = "";
+    return;
+  }
+
+  const dsMatch  = allNodes.filter(n =>
+    n.nodeGroup === "dataset" &&
+    (n.label.toLowerCase().includes(q) || n.id.toLowerCase().includes(q))
+  );
+  const artMatch = allNodes.filter(n =>
+    n.nodeGroup === "article" && n.label.toLowerCase().includes(q)
+  );
+  const total = [...dsMatch, ...artMatch];
+
+  if (!total.length) {
+    net.unselectAll();
+    this.className = "no-results";
+    return;
+  }
+
+  this.className = "has-results";
+
+  // Reveal matched articles and their edges
+  const hiddenArt = artMatch.map(n => n.id).filter(id => nodes.get(id).hidden);
+  if (hiddenArt.length) nodes.update(hiddenArt.map(id => ({ id, hidden: false })));
+
+  const artSet = new Set(artMatch.map(n => n.id));
+  const edgeUpdates = [];
+  edges.forEach(e => { if (artSet.has(e.to)) edgeUpdates.push({ id: e.id, hidden: false }); });
+  if (edgeUpdates.length) edges.update(edgeUpdates);
+
+  net.selectNodes(total.map(n => n.id));
+});
+</script>
+</body>
+</html>
