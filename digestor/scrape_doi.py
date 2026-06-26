@@ -30,7 +30,7 @@ PDS_DOI_PAGE = "https://pds-geosciences.wustl.edu/dataserv/doi.htm"
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 }
-MAX_CONCURRENT = 5
+MAX_CONCURRENT = 10
 
 _IDGEO_RE = re.compile(r"[?&]product_idGeo=(\d+)", re.IGNORECASE)
 _DOI_RE    = re.compile(r"10\.\d{4,9}/[^\s\"'<>&]+")
@@ -230,24 +230,29 @@ async def _get_collection_meta(
     except Exception:
         return {}
 
-    dataset_id   = data.get("pds:dataset_id") or ""
-    product_name = data.get("pds:product_name") or ""
+    dataset_id   = data.get("pdsode:dataset_id") or data.get("pds:dataset_id") or ""
+    product_name = data.get("pdsode:product_name") or data.get("pds:product_name") or ""
 
-    # Cibles : ssys:targets peut être une liste ou une string
     targets = data.get("ssys:targets") or data.get("target") or []
     if isinstance(targets, str):
         targets = [targets]
 
+    stac_doi = None
+    publications = data.get("sci:publications", [])
+    if publications and isinstance(publications, list):
+        stac_doi = publications[0].get("doi") or None
+
     return {
-        "dataset_id":        dataset_id,
-        "description":       data.get("description") or "",
-        "title":             data.get("title") or "",
-        "product_name":      product_name,
-        "processing_level":  _infer_processing_level(collection_id, dataset_id, product_name),
-        "targets":           targets,
-        "target_class":      data.get("ssys:target_class") or "",
-        "n_products":        data.get("pds:number_of_products"),
-        "ode_pt":            (data.get("_ode") or {}).get("pt") or "",
+        "stac_doi":        stac_doi,
+        "dataset_id":      dataset_id,
+        "description":     data.get("description") or "",
+        "title":           data.get("title") or "",
+        "product_name":    product_name,
+        "processing_level": _infer_processing_level(collection_id, dataset_id, product_name),
+        "targets":         targets,
+        "target_class":    data.get("ssys:target_class") or "",
+        "n_products":      data.get("pdsode:number_of_products") or data.get("pds:number_of_products"),
+        "ode_pt":          (data.get("_ode") or {}).get("pt") or "",
     }
 
 ##############################################################################
@@ -484,21 +489,28 @@ async def _scrape_doi_for_collection(
             _get_landing_url(client, collection_id, verbose),
         )
 
-        doi = None
         dataset_id = meta.get("dataset_id", "")
 
-        if landing:
+        # Priorité 0 : DOI directement dans le STAC
+        doi = meta.get("stac_doi")
+        if doi and verbose:
+            print(f"{collection_id}: STAC -> {doi}")
+
+        # Priorité 1 : ODE
+        if not doi and landing:
             doi = await _get_doi_from_ode(collection_id, landing, verbose)
 
-        if not doi and dataset_id:
-            if pds_dois:
-                doi = _match_pds_doi(dataset_id, pds_dois)
-                if doi and verbose:
-                    print(f"{collection_id}: PDS page -> {doi}")
-            if not doi:
-                doi = await _get_doi_from_datacite(dataset_id, verbose, collection_id)
+        # Priorité 2 : PDS Geosciences page
+        if not doi and dataset_id and pds_dois:
+            doi = _match_pds_doi(dataset_id, pds_dois)
+            if doi and verbose:
+                print(f"{collection_id}: PDS page -> {doi}")
 
-        return collection_id, doi 
+        # Priorité 3 : DataCite
+        if not doi and dataset_id:
+            doi = await _get_doi_from_datacite(dataset_id, verbose, collection_id)
+
+        return collection_id, doi
 
 ##############################################################################
 # MAIN
